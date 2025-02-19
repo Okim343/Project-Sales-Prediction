@@ -7,8 +7,12 @@ To start, set the working directory to where this repo is located in your machin
 activate the environment by typing the following in your terminal:
 
 ```console
-$ mamba env create -f environment.yml
-$ conda activate final_project_enrico
+mamba env create -f environment.yml
+conda activate final_project_enrico
 ```
 
-Then...
+Then to install the pre-commit hooks run:
+
+```console
+pre-commit install
+```
