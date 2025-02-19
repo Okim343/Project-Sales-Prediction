@@ -36,4 +36,4 @@ dependencies:
 
 
   # Install project
-  - pip: [-e ., pdbp, kaleido, xgboost]
+  - pip: [pdbp, kaleido, xgboost]
