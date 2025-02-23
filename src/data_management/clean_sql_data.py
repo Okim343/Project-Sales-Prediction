@@ -20,18 +20,12 @@ def process_sales_data(data: pd.DataFrame, sku: str, date_threshold: str):
     data = data.copy()
     _fail_if_invalid_sales_data(data)
 
-    data = _filter_sku(data, sku)
     data = _rename_columns(data)
     data = _convert_date_column(data)
     data = _collapse_sales_data(data)
     data = _set_datetime_index(data)
-    data = _drop_missing_data(data, date_threshold)
+
     return data
-
-
-def _filter_sku(data: pd.DataFrame, sku: str):
-    """Filters the dataframe for a specific SKU."""
-    return data[data["SKU"] == sku].copy()
 
 
 def _rename_columns(data: pd.DataFrame):
@@ -59,15 +53,14 @@ def _set_datetime_index(data: pd.DataFrame):
     return data
 
 
-def _drop_missing_data(data: pd.DataFrame, date_threshold: str):
-    """Drops data based on a given date threshold."""
-    date_threshold = pd.to_datetime(date_threshold)
-    return data.loc[data.index >= date_threshold].copy()
-
-
 def _fail_if_invalid_sales_data(data: pd.DataFrame):
     """Raise an error if data is not a DataFrame or is missing required columns."""
-    required_columns = {"DataEmissao", "Qtd", "SKU"}
+    required_columns = {
+        "date_closed",
+        "paid_amount",
+        "status",
+        "order_items_item_seller_sku",
+    }
 
     if not isinstance(data, pd.DataFrame):
         error_msg = f"'data' must be a pandas DataFrame, got {type(data)}."

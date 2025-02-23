@@ -2,7 +2,7 @@
 
 import pandas as pd
 
-from final_project_enrico.data_management.clean_sales_data import _set_datetime_index
+from data_management.clean_sql_data import _set_datetime_index
 
 
 def split_train_test(data: pd.DataFrame, split_date: str):
