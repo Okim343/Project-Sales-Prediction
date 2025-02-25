@@ -1,6 +1,8 @@
 from sqlalchemy import create_engine
 import pandas as pd
 
+from config_ml import DATA
+
 
 def import_data_from_sql(user, password, host, port, dbname, view, chunksize=10000):
     """
@@ -25,19 +27,11 @@ def import_data_from_sql(user, password, host, port, dbname, view, chunksize=100
     chunks = pd.read_sql_query(query, engine, chunksize=chunksize)
     df = pd.concat(chunks, ignore_index=True)
 
-    # Check and print the size of the DataFrame
+    # Check the size of the DataFrame
     memory_usage_mb = df.memory_usage(deep=True).sum() / (1024 * 1024)
     print(f"Total memory usage: {memory_usage_mb:.2f} MB")
 
     return df
-
-
-def get_row_count(user, password, host, port, dbname, view):
-    engine = create_engine(f"postgresql://{user}:{password}@{host}:{port}/{dbname}")
-    count_query = f"SELECT COUNT(*) FROM {view}"
-    with engine.connect() as conn:
-        row_count = conn.execute(count_query).scalar()
-    return row_count
 
 
 if __name__ == "__main__":
@@ -50,9 +44,9 @@ if __name__ == "__main__":
     port = "5432"
     dbname = "Mercado Livre"
     view = "public.vw_orders_items"
+    produces = DATA / "raw" / "raw_sql.csv"
 
-    rows_expected = get_row_count(user, password, host, port, dbname, view)
-    print(f"Expected number of rows: {rows_expected}")
+    data = import_data_from_sql(user, password, host, port, dbname, view)
+    data.to_csv(produces, index=False)
 
-    df = import_data_from_sql(user, password, host, port, dbname, view)
     print("Data imported successfully!")
