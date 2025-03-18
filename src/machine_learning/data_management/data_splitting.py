@@ -2,52 +2,33 @@
 
 import pandas as pd
 
-from data_management.clean_sql_data import _set_datetime_index
 
+def split_train_test(data: pd.DataFrame):
+    """
+    Splits the dataset into training and testing sets using the last month of data as the test set.
 
-def split_train_test(data: pd.DataFrame, split_date: str):
-    """Splits the dataset into training and testing sets based on a date threshold.
+    The last month of data is determined by subtracting one month from the maximum date in the data index.
+    The training set contains data with dates before the threshold, and the test set includes data on or after the threshold.
 
     Parameters:
-    data (pd.DataFrame): The input DataFrame with a time-based index.
-    split_date (str): The date threshold to split the data.
+        data (pd.DataFrame): The input DataFrame with a DatetimeIndex.
 
     Returns:
-    The training and testing sets.
+        Tuple[pd.DataFrame, pd.DataFrame]: The training and testing sets.
     """
     data = data.copy()
-    data = _set_datetime_index(data)
-
-    _fail_if_split_date_invalid(data, split_date)
-
-    train = _get_train_data(data, split_date)
-    test = _get_test_data(data, split_date)
-    return train, test
-
-
-def _get_train_data(data: pd.DataFrame, split_date: str):
-    """Filters the training data (dates before the split date)."""
-    split_date = pd.to_datetime(split_date)
-    return data.loc[data.index < split_date].copy()
-
-
-def _get_test_data(data: pd.DataFrame, split_date: str):
-    """Filters the test data (dates on or after the split date)."""
-    split_date = pd.to_datetime(split_date)
-    return data.loc[data.index >= split_date].copy()
-
-
-def _fail_if_split_date_invalid(data: pd.DataFrame, split_date: str):
-    """Raise an error if split_date is not within the range of data's datetime index."""
-    split_date = pd.to_datetime(split_date)
 
     if not isinstance(data.index, pd.DatetimeIndex):
-        error_msg = "Data index must be a DatetimeIndex."
-        raise TypeError(error_msg)
+        raise TypeError("Data index must be a DatetimeIndex.")
 
-    min_date = data.index.min()
+    # Determine the last date in the dataset
     max_date = data.index.max()
 
-    if not (min_date <= split_date <= max_date):
-        error_msg = f"split_date '{split_date}' is outside the available data range "
-        raise ValueError(error_msg)
+    # Calculate the threshold as one month prior to the max_date
+    threshold_date = max_date - pd.DateOffset(months=1)
+
+    # Split the data into training and test sets
+    train = data.loc[data.index < threshold_date].copy()
+    test = data.loc[data.index >= threshold_date].copy()
+
+    return train, test

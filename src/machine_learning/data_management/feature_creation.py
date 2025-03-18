@@ -2,8 +2,6 @@
 
 import pandas as pd
 
-from data_management.clean_sql_data import _set_datetime_index
-
 
 def create_time_series_features(data: pd.DataFrame):
     """Generates time series features based on the DataFrame index.
@@ -17,7 +15,6 @@ def create_time_series_features(data: pd.DataFrame):
     data = data.copy()
     _fail_if_invalid_sales_data(data)
 
-    data = _set_datetime_index(data)
     data = _add_lag_features(data)
     data = _add_rolling_features(data)
     data = _add_calendar_features(data)

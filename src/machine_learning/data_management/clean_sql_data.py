@@ -3,16 +3,19 @@
 import pandas as pd
 
 
-def process_sales_data(data: pd.DataFrame, sku: str, date_threshold: str):
+def process_sales_data(data: pd.DataFrame):
     """Processes the sales data.
 
-    This function filters sales data for a specific SKU, removes outdated data,
-    renames columns, converts date formats, and aggregates quantities by date.
+    This function renames columns, converts date formats, and aggregates quantities by date.
 
     Parameters:
-    data (pd.DataFrame): The input dataframe with columns 'DataEmissao', 'Qtd', 'SKU'.
-    sku (str): The specific SKU to filter the data.
-    date_threshold (str): The date threshold to filter missing or outdated data.
+    data (pd.DataFrame): The input dataframe with columns:
+        "order_id",
+        "date_created",
+        "fulfilled",
+        "order_items_item_seller_sku",
+        "order_items_quantity",
+        "order_items_unit_price",
 
     Returns:
     pd.DataFrame: Processed dataframe with cleaned and aggregated sales data.
@@ -30,19 +33,33 @@ def process_sales_data(data: pd.DataFrame, sku: str, date_threshold: str):
 
 def _rename_columns(data: pd.DataFrame):
     """Renames columns to more understandable names."""
-    return data.rename(columns={"DataEmissao": "date", "Qtd": "quant"}).copy()
+    return data.rename(
+        columns={
+            "date_created": "date",
+            "order_items_quantity": "quant",
+            "order_items_unit_price": "price",
+            "order_items_item_seller_sku": "sku",
+        }
+    ).copy()
 
 
 def _convert_date_column(data: pd.DataFrame):
-    """Converts the 'date' column to datetime format."""
+    """Converts the 'date' column to datetime format and removes timezones."""
     data = data.copy()
-    data["date"] = pd.to_datetime(data["date"])
+    data["date"] = pd.to_datetime(data["date"], errors="coerce")  # Convert to datetime
+    data["date"] = data["date"].apply(
+        lambda x: x.tz_localize(None)
+        if hasattr(x, "tzinfo") and x.tzinfo is not None
+        else x
+    )  # Remove timezone
     return data
 
 
 def _collapse_sales_data(data: pd.DataFrame):
     """Aggregates sales data by date, summing the quantity."""
-    return data.groupby("date", as_index=False).agg({"quant": "sum", "SKU": "first"})
+    return data.groupby("date", as_index=False).agg(
+        {"quant": "sum", "sku": "first", "price": "sum"}
+    )
 
 
 def _set_datetime_index(data: pd.DataFrame):
@@ -56,10 +73,12 @@ def _set_datetime_index(data: pd.DataFrame):
 def _fail_if_invalid_sales_data(data: pd.DataFrame):
     """Raise an error if data is not a DataFrame or is missing required columns."""
     required_columns = {
-        "date_closed",
-        "paid_amount",
-        "status",
+        "order_id",
+        "date_created",
+        "fulfilled",
         "order_items_item_seller_sku",
+        "order_items_quantity",
+        "order_items_unit_price",
     }
 
     if not isinstance(data, pd.DataFrame):

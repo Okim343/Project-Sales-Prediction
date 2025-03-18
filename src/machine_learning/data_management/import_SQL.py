@@ -23,7 +23,7 @@ def import_data_from_sql(user, password, host, port, dbname, view, chunksize=100
         pd.DataFrame: DataFrame containing the imported data.
     """
     engine = create_engine(f"postgresql://{user}:{password}@{host}:{port}/{dbname}")
-    query = f"SELECT COUNT(*) FROM {view}"
+    query = f"SELECT * FROM {view}"
     chunks = pd.read_sql_query(query, engine, chunksize=chunksize)
     df = pd.concat(chunks, ignore_index=True)
 
@@ -43,8 +43,8 @@ if __name__ == "__main__":
     host = "172.27.40.210"
     port = "5432"
     dbname = "Mercado Livre"
-    view = "public.vw_orders_items"
-    produces = DATA / "raw" / "raw_sql.csv"
+    view = "public.view_enrico"
+    produces = DATA / "raw_sql.csv"
 
     data = import_data_from_sql(user, password, host, port, dbname, view)
     data.to_csv(produces, index=False)
