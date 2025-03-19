@@ -1,7 +1,7 @@
 import logging
 import pandas as pd
 
-from config_ml import DATA, BLD
+from estimation.config_ml import DATA, BLD
 from data_management.import_SQL import import_data_from_sql
 from data_management.clean_sql_data import process_sales_data
 from data_management.feature_creation import create_time_series_features
@@ -12,7 +12,8 @@ from estimation.data_splitting import split_train_test
 logging.basicConfig(level=logging.INFO)
 
 if __name__ == "__main__":
-    import_data = True
+    import_data = False
+    import_regressor = True
     if import_data:
         print("Importing data from SQL...")
 
@@ -25,6 +26,8 @@ if __name__ == "__main__":
         view = "public.view_enrico"
 
         data = import_data_from_sql(user, password, host, port, dbname, view)
+        produces = DATA / "raw_sql.csv"
+        data.to_csv(produces, index=False)
 
         print("Data imported successfully!")
     else:
@@ -47,15 +50,19 @@ if __name__ == "__main__":
 
     logging.info("Data processing complete!")
 
-    sku_regressors = train_model_for_each_sku(feature_data)
-
-    # Define where to save the dictionary
-    output_file = BLD / "sku_regressors.pkl"
-    save_regressors(sku_regressors, output_file)
-
-    logging.info("Model training and saving complete!")
-
     pickle_path = BLD / "sku_regressors.pkl"
+
+    if import_regressor:
+        logging.info(f"Loading regressors from {pickle_path}...")
+
+    else:
+        sku_regressors = train_model_for_each_sku(feature_data)
+
+        # Define where to save the dictionary
+        output_file = BLD / "sku_regressors.pkl"
+        save_regressors(sku_regressors, output_file)
+
+        logging.info("Model training and saving complete!")
 
     print_available_skus(pickle_path)
 

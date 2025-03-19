@@ -23,6 +23,8 @@ if __name__ == "__main__":
         view = "public.view_enrico"
 
         data = import_data_from_sql(user, password, host, port, dbname, view)
+        produces = DATA / "raw_sql.csv"
+        data.to_csv(produces, index=False)
 
         print("Data imported successfully!")
     else:

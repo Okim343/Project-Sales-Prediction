@@ -1,7 +1,7 @@
 from sqlalchemy import create_engine
 import pandas as pd
 
-from config_ml import DATA
+from data_management.config_ml import DATA
 
 
 def import_data_from_sql(user, password, host, port, dbname, view, chunksize=10000):
