@@ -4,7 +4,6 @@ import pandas as pd
 from config_ml import DATA, BLD
 from import_SQL import import_data_from_sql
 from clean_sql_data import process_sales_data
-from data_splitting import split_train_test
 from feature_creation import create_time_series_features
 
 logging.basicConfig(level=logging.INFO)
@@ -34,8 +33,6 @@ if __name__ == "__main__":
 
     feature_data = create_time_series_features(clean_data)
 
-    train_data, test_data = split_train_test(clean_data)
-
     output_dir = BLD
 
     if (
@@ -46,7 +43,6 @@ if __name__ == "__main__":
     else:
         logging.info("BLD directory already exists")
 
-    train_data.to_csv(BLD / "train_data.csv")
-    test_data.to_csv(BLD / "test_data.csv")
+    feature_data.to_csv(BLD / "feature_data.csv")
 
     print("Data processing complete!")
