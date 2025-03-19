@@ -6,7 +6,7 @@ import xgboost as xgb
 import pickle
 from pathlib import Path
 
-from data_splitting import split_train_test
+from estimation.data_splitting import split_train_test
 
 
 def train_model_for_each_sku(data: pd.DataFrame) -> dict:
@@ -36,6 +36,9 @@ def train_model_for_each_sku(data: pd.DataFrame) -> dict:
         # Split the SKU-specific data into train and test sets
         train, test = split_train_test(sku_data)
 
+        # Debugging statement
+        # logging.info(f"SKU: {sku}, Train shape: {train.shape}, Test shape: {test.shape}")
+
         # Skip SKUs with insufficient training data
         if train.empty:
             logging.warning(f"SKU {sku} has insufficient data for training; skipping.")
@@ -44,12 +47,7 @@ def train_model_for_each_sku(data: pd.DataFrame) -> dict:
         # Train the model for this SKU using the existing function
         model = train_xgboost_model(train, test)
 
-        # Make predictions on the test set
-        features = ["day_of_week", "day_of_month", "rolling_mean_3", "lag_1", "price"]
-        x_test = test[features]
-        predictions = model.predict(x_test)
-
-        sku_predictions[sku] = predictions
+        sku_predictions[sku] = model
 
     return sku_predictions
 

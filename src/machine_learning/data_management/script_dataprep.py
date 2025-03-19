@@ -26,7 +26,7 @@ if __name__ == "__main__":
 
         print("Data imported successfully!")
     else:
-        data = pd.read_csv(DATA / "raw_sql.csv")
+        data = pd.read_csv(DATA / "raw_sql.csv", engine="pyarrow")
         print("Data already imported!")
 
     clean_data = process_sales_data(data)
