@@ -54,7 +54,7 @@ def plot_predictions_from_model(pickle_path, test, df_actual, sku):
 
     reg = _load_regressor(pickle_path, sku)
 
-    features = ["day_of_week", "day_of_month", "rolling_mean_3", "lag_1", "price"]
+    features = ["day_of_week", "day_of_month", "rolling_mean_3", "lag_1"]
     x_test = test_sku[features]
     test_sku["prediction"] = reg.predict(x_test)
 

@@ -64,8 +64,6 @@ def forecast_future_sales_with_split(data: pd.DataFrame, forecast_days: int) -> 
         else:
             last_values = [sku_data[target].iloc[-1]] * 3
 
-        last_price_per_unit = sku_data["price_per_unit"].iloc[-1]
-
         predictions = []
         for date in future_dates:
             day_of_week = date.dayofweek
@@ -79,7 +77,6 @@ def forecast_future_sales_with_split(data: pd.DataFrame, forecast_days: int) -> 
                     "day_of_month": [day_of_month],
                     "rolling_mean_3": [rolling_mean_3],
                     "lag_1": [lag_1],
-                    "price_per_unit": [last_price_per_unit],
                 }
             )
 
@@ -124,7 +121,6 @@ def train_xgboost_model(train: pd.DataFrame, test: pd.DataFrame) -> xgb.XGBRegre
         "day_of_month",
         "rolling_mean_3",
         "lag_1",
-        "price_per_unit",
     ]
     target = "quant"
 
