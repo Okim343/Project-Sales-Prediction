@@ -8,6 +8,89 @@ from pathlib import Path
 
 from estimation.data_splitting import split_train_test
 
+from sklearn.multioutput import MultiOutputRegressor
+
+
+def forecast_future_sales_direct(data: pd.DataFrame, forecast_days: int) -> dict:
+    """
+    For each SKU in the data, perform a train/test split as usual,
+    then train a multi-output XGBoost model using a direct forecasting approach:
+    each training sample uses features at time t to predict the next forecast_days values.
+    Finally, forecast future sales for the next forecast_days using the trained model.
+
+    Args:
+        data (pd.DataFrame): DataFrame containing data for multiple SKUs.
+        forecast_days (int): Number of days into the future to forecast.
+
+    Returns:
+        dict: Dictionary where each key is a SKU and the value is a DataFrame of forecasts.
+    """
+    sku_forecasts = {}
+    FEATURES = ["day_of_week", "day_of_month", "rolling_mean_3", "lag_1"]
+
+    for sku in data["sku"].unique():
+        sku_data = data[data["sku"] == sku].copy()
+        if not isinstance(sku_data.index, pd.DatetimeIndex):
+            sku_data.index = pd.to_datetime(sku_data.index)
+        sku_data = sku_data.sort_index()
+
+        # Ensure SKU has at least one year of data
+        first_date = sku_data.index.min()
+        last_date = sku_data.index.max()
+        if (last_date - first_date) < pd.Timedelta(days=365):
+            logging.warning(
+                f"SKU {sku} has less than one year of data; skipping forecast."
+            )
+            continue
+
+        # Ensure there are enough rows for multi-step forecasting:
+        if len(sku_data) < forecast_days + 1:
+            logging.warning(
+                f"SKU {sku} does not have enough data for multi-step forecasting; skipping."
+            )
+            continue
+
+        # Build the training set using a sliding window approach:
+        X_train = []
+        y_train = []
+        # For each time index t where t + forecast_days exists, use features at time t
+        # and target as quant values from t+1 to t+forecast_days.
+        for i in range(len(sku_data) - forecast_days):
+            X_train.append(sku_data.iloc[i][FEATURES].values)
+            y_train.append(sku_data.iloc[i + 1 : i + forecast_days + 1]["quant"].values)
+        X_train = pd.DataFrame(X_train, columns=FEATURES)
+        # Create target column names for each forecast step
+        y_columns = [f"quant_{i+1}" for i in range(forecast_days)]
+        y_train = pd.DataFrame(y_train, columns=y_columns)
+
+        # Train multi-output regressor with XGBoost as the base estimator
+        base_model = xgb.XGBRegressor(
+            base_score=0.5,
+            booster="gbtree",
+            n_estimators=1000,
+            objective="reg:squarederror",
+            max_depth=3,
+            learning_rate=0.01,
+        )
+        multi_model = MultiOutputRegressor(base_model)
+        multi_model.fit(X_train, y_train)
+
+        # For forecasting, use the last available sample from training as input
+        # (alternatively, you might compute features for the current day)
+        last_features = sku_data.iloc[-forecast_days - 1][FEATURES].values.reshape(
+            1, -1
+        )
+        predictions = multi_model.predict(last_features)[0]
+
+        # Build forecast DataFrame with future dates as index
+        future_dates = pd.date_range(
+            start=last_date + pd.Timedelta(days=1), periods=forecast_days, freq="D"
+        )
+        forecast_df = pd.DataFrame({"prediction": predictions}, index=future_dates)
+        sku_forecasts[sku] = forecast_df
+
+    return sku_forecasts
+
 
 def forecast_future_sales_with_split(data: pd.DataFrame, forecast_days: int) -> dict:
     """

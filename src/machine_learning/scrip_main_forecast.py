@@ -6,7 +6,7 @@ from estimation.config_ml import DATA, BLD
 from data_management.import_SQL import import_data_from_sql
 from data_management.clean_sql_data import process_sales_data
 from data_management.feature_creation import create_time_series_features
-from estimation.model_forecast import forecast_future_sales_with_split, save_regressors
+from estimation.model_forecast import save_regressors, forecast_future_sales_direct
 from estimation.plot import print_available_skus
 
 pd.options.plotting.backend = "matplotlib"
@@ -69,7 +69,7 @@ if __name__ == "__main__":
         sku_forecast = pd.read_pickle(pickle_path)
 
     else:
-        sku_forecast = forecast_future_sales_with_split(feature_data, forecast_days)
+        sku_forecast = forecast_future_sales_direct(feature_data, forecast_days)
 
         # Define where to save the dictionary
         output_file = BLD / "sku_forecast.pkl"
