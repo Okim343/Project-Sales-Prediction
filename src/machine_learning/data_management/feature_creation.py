@@ -18,6 +18,7 @@ def create_time_series_features(data: pd.DataFrame):
     data = _add_lag_features(data)
     data = _add_rolling_features(data)
     data = _add_calendar_features(data)
+    data = _add_price_features(data)
     return data
 
 
@@ -37,6 +38,12 @@ def _add_calendar_features(data: pd.DataFrame):
     """Adds calendar-based time features from the DataFrame index."""
     data["day_of_week"] = data.index.dayofweek
     data["day_of_month"] = data.index.day
+    return data
+
+
+def _add_price_features(data: pd.DataFrame):
+    """Adds price per unit features to the dataset."""
+    data["price_per_unit"] = data["price"] / data["quant"]
     return data
 
 

@@ -8,6 +8,7 @@ from data_management.feature_creation import create_time_series_features
 from estimation.model import train_model_for_each_sku, save_regressors
 from estimation.plot import plot_predictions_from_model, print_available_skus
 from estimation.data_splitting import split_train_test
+from data_management.test_plot import plot_timeseries_for_sku
 
 logging.basicConfig(level=logging.INFO)
 
@@ -49,6 +50,13 @@ if __name__ == "__main__":
         logging.info("BLD directory already exists")
 
     logging.info("Data processing complete!")
+
+    sku = "TC213"
+
+    fig = plot_timeseries_for_sku(clean_data, sku, "2024-01-01", "2025-01-01")
+    produces = BLD / f"{sku}_time_series.html"
+    fig.write_html(produces)
+    print(f"Time series plotted and saved as HTML: {produces}")
 
     pickle_path = BLD / "sku_regressors.pkl"
 
