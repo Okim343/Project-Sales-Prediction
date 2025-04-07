@@ -8,13 +8,14 @@ from data_management.clean_sql_data import process_sales_data
 from data_management.feature_creation import create_time_series_features
 from estimation.model_forecast import save_regressors, forecast_future_sales_direct
 from estimation.plot import print_available_skus
+from post_estimation.save_sql import save_forecasts_to_sql
 
 pd.options.plotting.backend = "matplotlib"
 
 logging.basicConfig(level=logging.INFO)
 
 if __name__ == "__main__":
-    import_data = False
+    import_data = True
     import_forecast = True
     if import_data:
         print("Importing data from SQL...")
@@ -52,13 +53,6 @@ if __name__ == "__main__":
 
     feature_data.to_csv(BLD / "feature_data.csv")
 
-    # sku = "TC212"
-
-    """fig = plot_timeseries_for_sku(feature_data, sku , "2024-01-01", "2025-01-01")
-    produces = BLD / f"{sku}_time_series.html"
-    fig.write_html(produces)
-    print(f"Time series plotted and saved as HTML: {produces}") """
-
     logging.info("Data processing complete!")
 
     pickle_path = BLD / "sku_forecast.pkl"
@@ -91,3 +85,7 @@ if __name__ == "__main__":
         print(f"Forecast plotted and saved as HTML: {html_file}")
     else:
         print(f"No forecast available for SKU {sku}")
+
+    # Save the forecasts to the remote SQL database
+    save_forecasts_to_sql(sku_forecast)
+    logging.info("Forecasts saved to remote SQL database.")
