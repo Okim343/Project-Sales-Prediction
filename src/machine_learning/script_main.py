@@ -1,8 +1,14 @@
+"""
+Main model training script with interactive SKU prediction visualization.
+Handles data import, model training, and individual SKU predictions.
+"""
+
 import logging
 import pandas as pd
 
-from estimation.config_ml import DATA, BLD
-from data_management.import_SQL import import_data_from_sql
+from config import AppConfig
+from database_utils import db_manager
+from estimation.config_ml import BLD
 from data_management.clean_sql_data import process_sales_data
 from data_management.feature_creation import create_time_series_features
 from estimation.model import train_model_for_each_sku, save_regressors
@@ -10,85 +16,117 @@ from estimation.plot import plot_predictions_from_model, print_available_skus
 from estimation.data_splitting import split_train_test
 from data_management.test_plot import plot_timeseries_for_sku
 
-logging.basicConfig(level=logging.INFO)
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
 
-if __name__ == "__main__":
-    import_data = False
-    import_regressor = True
+
+def load_or_import_data(import_data: bool) -> pd.DataFrame:
+    """Load data from file or import fresh data from database."""
     if import_data:
-        print("Importing data from SQL...")
+        logger.info("Importing fresh data from SQL...")
+        data = db_manager.import_data_from_sql()
 
-        # Connection details
-        user = "postgres"
-        password = "Tommy627!"
-        host = "172.27.40.210"
-        port = "5432"
-        dbname = "Mercado Livre"
-        view = "public.view_enrico"
-
-        data = import_data_from_sql(user, password, host, port, dbname, view)
-        produces = DATA / "raw_sql.csv"
-        data.to_csv(produces, index=False)
-
-        print("Data imported successfully!")
+        # Save to CSV for future use
+        data.to_csv(AppConfig.RAW_DATA_FILE, index=False)
+        logger.info("Data imported and cached successfully!")
+        return data
     else:
-        data = pd.read_csv(DATA / "raw_sql.csv", engine="pyarrow")
-        print("Data already imported!")
+        logger.info("Loading cached data from CSV...")
+        data = pd.read_csv(AppConfig.RAW_DATA_FILE, engine="pyarrow")
+        logger.info("Cached data loaded successfully!")
+        return data
 
-    clean_data = process_sales_data(data)
 
-    feature_data = create_time_series_features(clean_data)
+def generate_sample_timeseries_plot(
+    clean_data: pd.DataFrame, sku: str | None = None
+) -> None:
+    """Generate and save a sample time series plot for demonstration."""
+    sku = sku if sku is not None else AppConfig.DEFAULT_SKU
 
-    output_dir = BLD
-
-    if (
-        not output_dir.exists()
-    ):  # creating a loop to check if the directory exists and create it if needed
-        output_dir.mkdir()
-        logging.info("Directory created")
-    else:
-        logging.info("BLD directory already exists")
-
-    logging.info("Data processing complete!")
-
-    sku = "TC213"
-
+    logger.info(f"Generating time series plot for SKU {sku}...")
     fig = plot_timeseries_for_sku(clean_data, sku, "2024-01-01", "2025-01-01")
-    produces = BLD / f"{sku}_time_series.html"
-    fig.write_html(produces)
-    print(f"Time series plotted and saved as HTML: {produces}")
+    output_file = BLD / f"{sku}_time_series.html"
+    fig.write_html(output_file)
+    logger.info(f"Time series plot saved: {output_file}")
 
-    pickle_path = BLD / "sku_regressors.pkl"
 
-    if import_regressor:
-        logging.info(f"Loading regressors from {pickle_path}...")
-
+def load_or_train_models(import_regressor: bool, feature_data: pd.DataFrame) -> None:
+    """Load existing models or train new ones."""
+    if import_regressor and AppConfig.SKU_REGRESSORS_FILE.exists():
+        logger.info(f"Models will be loaded from {AppConfig.SKU_REGRESSORS_FILE}")
     else:
+        logger.info("Training new models for each SKU...")
         sku_regressors = train_model_for_each_sku(feature_data)
 
-        # Define where to save the dictionary
-        output_file = BLD / "sku_regressors.pkl"
-        save_regressors(sku_regressors, output_file)
+        # Save trained models
+        save_regressors(sku_regressors, AppConfig.SKU_REGRESSORS_FILE)
+        logger.info("Model training and saving complete!")
 
-        logging.info("Model training and saving complete!")
 
-    print_available_skus(pickle_path)
+def interactive_prediction_visualization(feature_data: pd.DataFrame) -> None:
+    """Handle interactive SKU selection and prediction visualization."""
+    print_available_skus(AppConfig.SKU_REGRESSORS_FILE)
 
-    # Prompt the user to enter the SKU
+    # Get user input for SKU
     sku = input("Please enter the SKU for predictions: ").strip()
 
-    produces = BLD / f"{sku}_predictions.png"
-
+    # Check if SKU data exists
     sku_data = feature_data[feature_data["sku"] == sku].copy()
 
     if sku_data.empty:
-        logging.error(f"No data found for SKU: {sku}.")
-    else:
-        train, test = split_train_test(sku_data)
+        logger.error(f"No data found for SKU: {sku}")
+        return
 
-        logging.info(f"Plotting predictions for SKU: {sku}...")
+    # Generate predictions and visualization
+    logger.info(f"Generating predictions for SKU: {sku}...")
 
-        fig = plot_predictions_from_model(pickle_path, test, feature_data, sku)
-        fig.savefig(produces)
+    _, test = split_train_test(sku_data)
 
-        logging.info("Predictions plotted and saved!")
+    fig = plot_predictions_from_model(
+        AppConfig.SKU_REGRESSORS_FILE, test, feature_data, sku
+    )
+
+    output_file = BLD / f"{sku}_predictions.png"
+    fig.savefig(output_file)
+    logger.info(f"Predictions plotted and saved: {output_file}")
+
+
+def main():
+    """Main execution function for model training and prediction."""
+    try:
+        # Configuration flags
+        import_data = False  # Set to True to fetch fresh data
+        import_regressor = True  # Set to False to train new models
+
+        # Load or import data
+        data = load_or_import_data(import_data)
+
+        # Process data
+        logger.info("Processing sales data...")
+        clean_data = process_sales_data(data)
+
+        logger.info("Creating time series features...")
+        feature_data = create_time_series_features(clean_data)
+        logger.info("Data processing complete!")
+
+        # Generate sample time series plot
+        generate_sample_timeseries_plot(clean_data)
+
+        # Load or train models
+        load_or_train_models(import_regressor, feature_data)
+
+        # Interactive prediction visualization
+        interactive_prediction_visualization(feature_data)
+
+    except Exception as e:
+        logger.error(f"Script failed with error: {e}")
+        raise
+    finally:
+        db_manager.close_connection()
+
+
+if __name__ == "__main__":
+    main()

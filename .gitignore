@@ -29,4 +29,7 @@ bld/
 
 # directories
 Data_Thiago
+
+# Claude
+.claude/
 CLAUDE.md
