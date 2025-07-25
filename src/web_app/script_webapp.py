@@ -270,7 +270,6 @@ def create_main_layout(df: pd.DataFrame, sku_options: List[str]) -> html.Div:
                                 "name": "Prediction",
                                 "id": "prediction",
                                 "type": "numeric",
-                                "format": {"specifier": ".2f"},
                             },
                         ],
                         page_size=15,

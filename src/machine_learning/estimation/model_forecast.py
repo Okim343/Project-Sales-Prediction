@@ -1,6 +1,7 @@
 """Function for fitting the machine learning model."""
 
 import logging
+import numpy as np
 import pandas as pd
 import xgboost as xgb
 import pickle
@@ -94,6 +95,9 @@ def forecast_future_sales_direct(data: pd.DataFrame, forecast_days: int) -> dict
             1, -1
         )
         predictions = multi_model.predict(last_features)[0]
+
+        # Round predictions up to integers (products sold in whole units)
+        predictions = np.ceil(predictions).astype(int)
 
         # Build forecast DataFrame with future dates starting from tomorrow
         # Use current date instead of last_date to ensure predictions are always for the future
@@ -211,6 +215,7 @@ def forecast_future_sales_with_split(data: pd.DataFrame, forecast_days: int) -> 
             )
 
             pred = model.predict(features_future)[0]
+            pred = np.ceil(pred).astype(int)  # Round up to integer
             predictions.append(pred)
             last_values.append(pred)
 
