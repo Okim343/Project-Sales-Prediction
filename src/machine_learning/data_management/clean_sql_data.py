@@ -63,14 +63,18 @@ def _convert_date_column(data: pd.DataFrame):
 
 
 def _collapse_sales_data(data: pd.DataFrame):
-    """Aggregates sales data by date and SKU, summing the quantity and price."""
+    """Aggregates sales data by date and MLB, summing the quantity and price."""
     data = data.copy()
     # Ensure that the 'date' column is converted to datetime and normalized
     data["date"] = pd.to_datetime(data["date"], errors="coerce").dt.normalize()
-    # Group by both date and SKU
-    return data.groupby(["date", "sku"], as_index=False).agg(
-        {"quant": "sum", "price": "sum"}
-    )
+
+    # Group by both date and MLB, keeping SKU information for reference
+    # We'll aggregate by taking the first SKU (since MLBs map to one SKU as mentioned by user)
+    agg_dict = {"quant": "sum", "price": "sum"}
+    if "sku" in data.columns:
+        agg_dict["sku"] = "first"  # Keep SKU for reference (first occurrence)
+
+    return data.groupby(["date", "mlb"], as_index=False).agg(agg_dict)
 
 
 def _set_datetime_index(data: pd.DataFrame):
@@ -83,43 +87,47 @@ def _set_datetime_index(data: pd.DataFrame):
 
 def _mark_missing_data(data: pd.DataFrame) -> pd.DataFrame:
     """
-    For each SKU in the data, reindex the DataFrame so that every day between the first and
+    For each MLB in the data, reindex the DataFrame so that every day between the first and
     last available date is present. For missing days, the "quant" and "price" values will be
-    set to 0, while the "sku" column will be filled appropriately.
+    set to 0, while the "mlb" and "sku" columns will be filled appropriately.
 
     Args:
-        data (pd.DataFrame): DataFrame with a datetime index and a "sku" column.
+        data (pd.DataFrame): DataFrame with a datetime index and "mlb" and "sku" columns.
 
     Returns:
-        pd.DataFrame: Reindexed DataFrame with all days present for each SKU.
+        pd.DataFrame: Reindexed DataFrame with all days present for each MLB.
     """
     df_list = []
-    for sku in data["sku"].unique():
-        sku_data = data[data["sku"] == sku].sort_index()
+    for mlb in data["mlb"].unique():
+        mlb_data = data[data["mlb"] == mlb].sort_index()
         # Drop rows with invalid (NaT) dates in the index
-        sku_data = sku_data[sku_data.index.notna()]
-        if sku_data.empty:
+        mlb_data = mlb_data[mlb_data.index.notna()]
+        if mlb_data.empty:
             continue
 
         # Normalize the index so that timestamps become midnight
-        sku_data.index = sku_data.index.normalize()
+        mlb_data.index = mlb_data.index.normalize()
         # Remove duplicate date entries (keeping the first occurrence)
-        sku_data = sku_data[~sku_data.index.duplicated(keep="first")]
+        mlb_data = mlb_data[~mlb_data.index.duplicated(keep="first")]
 
-        start_date = sku_data.index.min()
-        end_date = sku_data.index.max()
+        start_date = mlb_data.index.min()
+        end_date = mlb_data.index.max()
         if pd.isna(start_date) or pd.isna(end_date):
             continue
 
         full_date_range = pd.date_range(start=start_date, end=end_date, freq="D")
-        sku_data_reindexed = sku_data.reindex(full_date_range)
-        # Fill the "sku" column for missing days with the current SKU value.
-        sku_data_reindexed["sku"] = sku
+        mlb_data_reindexed = mlb_data.reindex(full_date_range)
+        # Fill the "mlb" column for missing days with the current MLB value
+        mlb_data_reindexed["mlb"] = mlb
+        # Fill the "sku" column for missing days (get the SKU from existing data)
+        if "sku" in mlb_data.columns:
+            sku_value = mlb_data["sku"].iloc[0]  # Get the SKU for this MLB
+            mlb_data_reindexed["sku"] = sku_value
         # Fill missing 'quant' and 'price' with 0
-        sku_data_reindexed["quant"] = sku_data_reindexed["quant"].fillna(0)
-        sku_data_reindexed["price"] = sku_data_reindexed["price"].fillna(0)
-        sku_data_reindexed.index.name = "date"
-        df_list.append(sku_data_reindexed)
+        mlb_data_reindexed["quant"] = mlb_data_reindexed["quant"].fillna(0)
+        mlb_data_reindexed["price"] = mlb_data_reindexed["price"].fillna(0)
+        mlb_data_reindexed.index.name = "date"
+        df_list.append(mlb_data_reindexed)
 
     if df_list:
         return pd.concat(df_list)
@@ -131,25 +139,25 @@ def _remove_long_zero_periods(
     data: pd.DataFrame, zero_period_days: int = 7
 ) -> pd.DataFrame:
     """
-    For each SKU in the data, for periods where 'quant' is 0 continuously for longer than
+    For each MLB in the data, for periods where 'quant' is 0 continuously for longer than
     zero_period_days, set the 'quant' value to NaN. This indicates that the sales data in that
     period is missing or unreliable, so the model can handle it appropriately.
 
     Args:
-        data (pd.DataFrame): DataFrame with a datetime index and a "sku" column.
+        data (pd.DataFrame): DataFrame with a datetime index and an "mlb" column.
         zero_period_days (int): Minimum number of consecutive days with quant equal to 0 to trigger setting to NaN.
 
     Returns:
         pd.DataFrame: DataFrame with long zero periods marked as missing (NaN).
     """
     df_list = []
-    for sku in data["sku"].unique():
-        sku_data = data[data["sku"] == sku].sort_index()
+    for mlb in data["mlb"].unique():
+        mlb_data = data[data["mlb"] == mlb].sort_index()
         # Create a mask for rows where quant is 0
-        zero_mask = sku_data["quant"] == 0
-        zero_data = sku_data[zero_mask]
+        zero_mask = mlb_data["quant"] == 0
+        zero_data = mlb_data[zero_mask]
         if zero_data.empty:
-            df_list.append(sku_data)
+            df_list.append(mlb_data)
             continue
 
         # Group consecutive dates in zero_data: if the difference between consecutive dates
@@ -159,8 +167,8 @@ def _remove_long_zero_periods(
         # For each group of consecutive zeros, if the group is longer than the threshold, mark those rows as missing
         for _, group in zero_data.groupby(groups):
             if len(group) > zero_period_days:
-                sku_data.loc[group.index, "quant"] = np.nan
-        df_list.append(sku_data)
+                mlb_data.loc[group.index, "quant"] = np.nan
+        df_list.append(mlb_data)
     if df_list:
         return pd.concat(df_list).sort_index()
     else:
@@ -176,6 +184,7 @@ def _fail_if_invalid_sales_data(data: pd.DataFrame):
         "order_items_item_seller_sku",
         "order_items_quantity",
         "order_items_unit_price",
+        "mlb",  # Added MLB column requirement
     }
 
     if not isinstance(data, pd.DataFrame):

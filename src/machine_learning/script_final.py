@@ -49,14 +49,14 @@ def main():
 
         # Generate forecasts
         logger.info(f"Generating {AppConfig.FORECAST_DAYS_LONG}-day forecasts...")
-        sku_forecast = forecast_future_sales_direct(
+        mlb_forecast = forecast_future_sales_direct(
             feature_data, AppConfig.FORECAST_DAYS_LONG
         )
         logger.info("Forecasting complete!")
 
         # Save forecasts to database
         logger.info("Saving forecasts to remote SQL database...")
-        db_manager.save_forecasts_to_sql(sku_forecast)
+        db_manager.save_forecasts_to_sql(mlb_forecast)
         logger.info("Forecasts saved successfully!")
 
     except Exception as e:

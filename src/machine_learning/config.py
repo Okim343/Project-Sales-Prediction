@@ -38,7 +38,7 @@ class DatabaseConfig:
     PORT = os.getenv("DB_PORT", "5432")
     DBNAME = os.getenv("DB_NAME", "Mercado Livre")
     VIEW = os.getenv("DB_VIEW", "public.view_enrico")
-    FORECAST_TABLE = os.getenv("DB_FORECAST_TABLE", "public.sku_forecats_90_days")
+    FORECAST_TABLE = os.getenv("DB_FORECAST_TABLE", "public.mlb_forecasts_90_days")
 
     _engine: Optional[Engine] = None
 
@@ -64,7 +64,10 @@ class AppConfig:
     FORECAST_DAYS = int(os.getenv("FORECAST_DAYS", "30"))
     FORECAST_DAYS_LONG = int(os.getenv("FORECAST_DAYS_LONG", "90"))
     DEFAULT_SKU = os.getenv("DEFAULT_SKU", "TC213")
-    ACTIVE_SKU_DAYS_THRESHOLD = int(os.getenv("ACTIVE_SKU_DAYS_THRESHOLD", "30"))
+    DEFAULT_MLB = os.getenv(
+        "DEFAULT_MLB", "TC213"
+    )  # Will update once we know MLB codes
+    ACTIVE_MLB_DAYS_THRESHOLD = int(os.getenv("ACTIVE_MLB_DAYS_THRESHOLD", "30"))
 
     # Model Features
     MODEL_FEATURES = ["day_of_week", "day_of_month", "rolling_mean_3", "lag_1", "price"]
@@ -73,5 +76,8 @@ class AppConfig:
     # File Paths
     RAW_DATA_FILE = DATA / "raw_sql.csv"
     FEATURE_DATA_FILE = BLD / "feature_data.csv"
-    SKU_REGRESSORS_FILE = BLD / "sku_regressors.pkl"
-    SKU_FORECAST_FILE = BLD / "sku_forecast.pkl"
+    MLB_REGRESSORS_FILE = BLD / "mlb_regressors.pkl"
+    MLB_FORECAST_FILE = BLD / "mlb_forecast.pkl"
+    # Keep legacy names for backward compatibility
+    SKU_REGRESSORS_FILE = BLD / "mlb_regressors.pkl"  # Alias for backward compatibility
+    SKU_FORECAST_FILE = BLD / "mlb_forecast.pkl"  # Alias for backward compatibility

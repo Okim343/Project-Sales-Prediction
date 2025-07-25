@@ -65,7 +65,7 @@ def validate_data_freshness(data: pd.DataFrame, max_age_days: int = 7) -> None:
         if days_old > max_age_days:
             logger.warning(
                 f"⚠️  STALE DATA WARNING: Cached data is {days_old} days old! "
-                f"This may cause all SKUs to be marked as inactive. "
+                f"This may cause all MLBs to be marked as inactive. "
                 f"Consider running with import_data=True or running refresh_data.py"
             )
         elif days_old > 2:
@@ -123,41 +123,48 @@ def generate_sample_timeseries_plot(
 
 def load_or_train_models(import_regressor: bool, feature_data: pd.DataFrame) -> None:
     """Load existing models or train new ones."""
-    if import_regressor and AppConfig.SKU_REGRESSORS_FILE.exists():
-        logger.info(f"Models will be loaded from {AppConfig.SKU_REGRESSORS_FILE}")
+    if import_regressor and AppConfig.MLB_REGRESSORS_FILE.exists():
+        logger.info(f"Models will be loaded from {AppConfig.MLB_REGRESSORS_FILE}")
     else:
-        logger.info("Training new models for each SKU...")
-        sku_regressors = train_model_for_each_sku(feature_data)
+        logger.info("Training new models for each MLB...")
+        mlb_regressors = train_model_for_each_sku(
+            feature_data
+        )  # Function still named train_model_for_each_sku but works with MLB
 
         # Save trained models
-        save_regressors(sku_regressors, AppConfig.SKU_REGRESSORS_FILE)
+        save_regressors(mlb_regressors, AppConfig.MLB_REGRESSORS_FILE)
         logger.info("Model training and saving complete!")
 
 
 def interactive_prediction_visualization(feature_data: pd.DataFrame) -> None:
-    """Handle interactive SKU selection and prediction visualization."""
-    print_available_skus(AppConfig.SKU_REGRESSORS_FILE)
+    """Handle interactive MLB selection and prediction visualization."""
+    print_available_skus(
+        AppConfig.MLB_REGRESSORS_FILE
+    )  # Function name still works for listing MLBs
 
-    # Get user input for SKU
-    sku = input("Please enter the SKU for predictions: ").strip()
+    # Get user input for MLB
+    mlb = input("Please enter the MLB for predictions: ").strip()
 
-    # Check if SKU data exists
-    sku_data = feature_data[feature_data["sku"] == sku].copy()
+    # Check if MLB data exists
+    mlb_data = feature_data[feature_data["mlb"] == mlb].copy()
 
-    if sku_data.empty:
-        logger.error(f"No data found for SKU: {sku}")
+    if mlb_data.empty:
+        logger.error(f"No data found for MLB: {mlb}")
         return
 
-    # Generate predictions and visualization
-    logger.info(f"Generating predictions for SKU: {sku}...")
+    # Get SKU for this MLB for display purposes
+    sku = mlb_data["sku"].iloc[0] if "sku" in mlb_data.columns else "Unknown"
 
-    _, test = split_train_test(sku_data)
+    # Generate predictions and visualization
+    logger.info(f"Generating predictions for MLB: {mlb} (SKU {sku})...")
+
+    _, test = split_train_test(mlb_data)
 
     fig = plot_predictions_from_model(
-        AppConfig.SKU_REGRESSORS_FILE, test, feature_data, sku
+        AppConfig.MLB_REGRESSORS_FILE, test, feature_data, mlb
     )
 
-    output_file = BLD / f"{sku}_predictions.png"
+    output_file = BLD / f"{mlb}_predictions.png"
     fig.savefig(output_file)
     logger.info(f"Predictions plotted and saved: {output_file}")
 

@@ -91,7 +91,8 @@ class DatabaseManager:
         Save forecast data to PostgreSQL database.
 
         Args:
-            forecasts: Dictionary of forecast DataFrames keyed by SKU
+            forecasts: Dictionary of forecast data keyed by MLB.
+                      Each value is a tuple of (forecast_df, sku)
             table: Target table name (defaults to config value)
 
         Raises:
@@ -104,10 +105,11 @@ class DatabaseManager:
 
             # Combine all forecast DataFrames
             all_forecasts = []
-            for sku, forecast_df in forecasts.items():
+            for mlb, (forecast_df, sku) in forecasts.items():
                 if forecast_df is not None and not forecast_df.empty:
                     forecast_df = forecast_df.copy()
-                    forecast_df["sku"] = sku
+                    forecast_df["mlb"] = mlb
+                    forecast_df["sku"] = sku  # Keep SKU for reference
                     # Reset the index so that the date becomes a column (crucial step!)
                     forecast_df = forecast_df.reset_index().rename(
                         columns={"index": "date"}
@@ -215,9 +217,9 @@ def validate_data_freshness(feature_data: pd.DataFrame) -> None:
                 pd.Timestamp.now().normalize() - global_max.normalize()
             ).days
 
-            if days_since_newest > AppConfig.ACTIVE_SKU_DAYS_THRESHOLD:
+            if days_since_newest > AppConfig.ACTIVE_MLB_DAYS_THRESHOLD:
                 logger.warning(
-                    f"Data is {days_since_newest} days old - may affect SKU activity detection"
+                    f"Data is {days_since_newest} days old - may affect MLB activity detection"
                 )
             else:
                 logger.info(f"Data freshness: {days_since_newest} days old")

@@ -15,25 +15,25 @@ from sklearn.multioutput import MultiOutputRegressor
 
 def forecast_future_sales_direct(data: pd.DataFrame, forecast_days: int) -> dict:
     """
-    For each SKU in the data, perform a train/test split as usual,
+    For each MLB in the data, perform a train/test split as usual,
     then train a multi-output XGBoost model using a direct forecasting approach:
     each training sample uses features at time t to predict the next forecast_days values.
     Finally, forecast future sales for the next forecast_days using the trained model.
 
     Args:
-        data (pd.DataFrame): DataFrame containing data for multiple SKUs.
+        data (pd.DataFrame): DataFrame containing data for multiple MLBs.
         forecast_days (int): Number of days into the future to forecast.
 
     Returns:
-        dict: Dictionary where each key is a SKU and the value is a DataFrame of forecasts.
+        dict: Dictionary where each key is a MLB and the value is a tuple of (forecast_df, sku).
     """
-    sku_forecasts = {}
+    mlb_forecasts = {}
     FEATURES = ["day_of_week", "day_of_month", "rolling_mean_3", "lag_1"]
 
     # Debug logging: track filtering statistics
-    total_skus = len(data["sku"].unique())
+    total_mlbs = len(data["mlb"].unique())
     skipped_inactive = skipped_insufficient = skipped_training = processed = 0
-    logging.info(f"Starting forecast for {total_skus} total SKUs")
+    logging.info(f"Starting forecast for {total_mlbs} total MLBs")
 
     # Quick data freshness check
     if hasattr(data, "index") and isinstance(data.index, pd.DatetimeIndex):
@@ -51,24 +51,27 @@ def forecast_future_sales_direct(data: pd.DataFrame, forecast_days: int) -> dict
             f"Processing data from {all_dates.min().date()} to {global_max.date()} ({days_old} days old)"
         )
 
-    for sku in data["sku"].unique():
-        sku_data = data[data["sku"] == sku].copy()
-        if not isinstance(sku_data.index, pd.DatetimeIndex):
-            sku_data.index = pd.to_datetime(sku_data.index)
-        sku_data = sku_data.sort_index()
+    for mlb in data["mlb"].unique():
+        mlb_data = data[data["mlb"] == mlb].copy()
+        if not isinstance(mlb_data.index, pd.DatetimeIndex):
+            mlb_data.index = pd.to_datetime(mlb_data.index)
+        mlb_data = mlb_data.sort_index()
+
+        # Get the SKU for this MLB (since each MLB maps to one SKU)
+        sku = mlb_data["sku"].iloc[0] if "sku" in mlb_data.columns else None
 
         # Get date range for logging purposes
-        last_date = sku_data.index.max()
+        last_date = mlb_data.index.max()
 
-        # Skip SKUs with no recent data (inactive products)
+        # Skip MLBs with no recent data (inactive products)
         today = pd.Timestamp.now().normalize()
-        cutoff_date = today - pd.Timedelta(days=AppConfig.ACTIVE_SKU_DAYS_THRESHOLD)
+        cutoff_date = today - pd.Timedelta(days=AppConfig.ACTIVE_MLB_DAYS_THRESHOLD)
 
         if last_date < cutoff_date:
             skipped_inactive += 1
             days_since_last_data = (today - last_date).days
             logging.warning(
-                f"SKU {sku} has no data in the last {AppConfig.ACTIVE_SKU_DAYS_THRESHOLD} days "
+                f"MLB {mlb} (SKU {sku}) has no data in the last {AppConfig.ACTIVE_MLB_DAYS_THRESHOLD} days "
                 f"(last data: {last_date.date()}, {days_since_last_data} days ago); "
                 f"skipping forecast for inactive product."
             )
@@ -79,10 +82,10 @@ def forecast_future_sales_direct(data: pd.DataFrame, forecast_days: int) -> dict
         min_required_length = (
             forecast_days + 15
         )  # Need extra data for meaningful training
-        if len(sku_data) < min_required_length:
+        if len(mlb_data) < min_required_length:
             skipped_insufficient += 1
             logging.warning(
-                f"SKU {sku} has insufficient data ({len(sku_data)} rows) for {forecast_days}-day "
+                f"MLB {mlb} (SKU {sku}) has insufficient data ({len(mlb_data)} rows) for {forecast_days}-day "
                 f"forecasting (requires at least {min_required_length} rows); skipping."
             )
             continue
@@ -92,9 +95,9 @@ def forecast_future_sales_direct(data: pd.DataFrame, forecast_days: int) -> dict
         y_train = []
         # For each time index t where t + forecast_days exists, use features at time t
         # and target as quant values from t+1 to t+forecast_days.
-        for i in range(len(sku_data) - forecast_days):
-            X_train.append(sku_data.iloc[i][FEATURES].values)
-            y_train.append(sku_data.iloc[i + 1 : i + forecast_days + 1]["quant"].values)
+        for i in range(len(mlb_data) - forecast_days):
+            X_train.append(mlb_data.iloc[i][FEATURES].values)
+            y_train.append(mlb_data.iloc[i + 1 : i + forecast_days + 1]["quant"].values)
         X_train = pd.DataFrame(X_train, columns=FEATURES)
         # Create target column names for each forecast step
         y_columns = [f"quant_{i+1}" for i in range(forecast_days)]
@@ -104,7 +107,7 @@ def forecast_future_sales_direct(data: pd.DataFrame, forecast_days: int) -> dict
         if len(X_train) == 0 or len(y_train) == 0:
             skipped_training += 1
             logging.warning(
-                f"SKU {sku} generated empty training set after processing; skipping forecast."
+                f"MLB {mlb} (SKU {sku}) generated empty training set after processing; skipping forecast."
             )
             continue
 
@@ -122,7 +125,7 @@ def forecast_future_sales_direct(data: pd.DataFrame, forecast_days: int) -> dict
 
         # For forecasting, use the last available sample from training as input
         # Fix: Use the last row instead of potentially out-of-bounds index
-        last_features = sku_data.iloc[-1][FEATURES].values.reshape(1, -1)
+        last_features = mlb_data.iloc[-1][FEATURES].values.reshape(1, -1)
         predictions = multi_model.predict(last_features)[0]
 
         # Round predictions to nearest integers (products sold in whole units)
@@ -137,73 +140,77 @@ def forecast_future_sales_direct(data: pd.DataFrame, forecast_days: int) -> dict
         )
 
         forecast_df = pd.DataFrame({"prediction": predictions}, index=future_dates)
-        sku_forecasts[sku] = forecast_df
+        # Store forecast with MLB as key and include SKU for reference
+        mlb_forecasts[mlb] = (forecast_df, sku)
         processed += 1
 
         # Log processing progress occasionally
         if processed % 50 == 0:
-            logging.info(f"Processed {processed} SKUs so far...")
+            logging.info(f"Processed {processed} MLBs so far...")
 
     # Final processing summary
     logging.info(
-        f"Forecast Summary - Total: {total_skus}, "
+        f"Forecast Summary - Total: {total_mlbs}, "
         f"Skipped (inactive): {skipped_inactive}, "
         f"Skipped (insufficient data): {skipped_insufficient}, "
         f"Skipped (empty training): {skipped_training}, "
         f"Successfully processed: {processed}"
     )
 
-    return sku_forecasts
+    return mlb_forecasts
 
 
 def forecast_future_sales_with_split(data: pd.DataFrame, forecast_days: int) -> dict:
     """
-    For each SKU in the data, perform a train/test split as usual,
+    For each MLB in the data, perform a train/test split as usual,
     train an XGBoost model using the train and test sets, and then forecast
     future sales for the next forecast_days using the trained model.
 
     Args:
-        data (pd.DataFrame): DataFrame containing data for multiple SKUs.
+        data (pd.DataFrame): DataFrame containing data for multiple MLBs.
         forecast_days (int): Number of days into the future to forecast.
 
     Returns:
-        dict: Dictionary where each key is a SKU and the value is a DataFrame of forecasts.
+        dict: Dictionary where each key is a MLB and the value is a tuple of (forecast_df, sku).
     """
 
-    sku_forecasts = {}
-    for sku in data["sku"].unique():
-        sku_data = data[data["sku"] == sku].copy()
+    mlb_forecasts = {}
+    for mlb in data["mlb"].unique():
+        mlb_data = data[data["mlb"] == mlb].copy()
 
-        if not isinstance(sku_data.index, pd.DatetimeIndex):
-            sku_data.index = pd.to_datetime(sku_data.index)
+        if not isinstance(mlb_data.index, pd.DatetimeIndex):
+            mlb_data.index = pd.to_datetime(mlb_data.index)
 
-        first_date = sku_data.index.min()
-        last_date = sku_data.index.max()
+        # Get the SKU for this MLB (since each MLB maps to one SKU)
+        sku = mlb_data["sku"].iloc[0] if "sku" in mlb_data.columns else None
+
+        first_date = mlb_data.index.min()
+        last_date = mlb_data.index.max()
         if (last_date - first_date) < pd.Timedelta(days=365):
             logging.warning(
-                f"SKU {sku} has less than one year of data; skipping forecast."
+                f"MLB {mlb} (SKU {sku}) has less than one year of data; skipping forecast."
             )
             continue
 
-        # Skip SKUs with no recent data (inactive products)
+        # Skip MLBs with no recent data (inactive products)
         today = pd.Timestamp.now().normalize()
-        cutoff_date = today - pd.Timedelta(days=AppConfig.ACTIVE_SKU_DAYS_THRESHOLD)
+        cutoff_date = today - pd.Timedelta(days=AppConfig.ACTIVE_MLB_DAYS_THRESHOLD)
         if last_date < cutoff_date:
             days_since_last_data = (today - last_date).days
             logging.warning(
-                f"SKU {sku} has no data in the last {AppConfig.ACTIVE_SKU_DAYS_THRESHOLD} days "
+                f"MLB {mlb} (SKU {sku}) has no data in the last {AppConfig.ACTIVE_MLB_DAYS_THRESHOLD} days "
                 f"(last data: {last_date.date()}, {days_since_last_data} days ago); "
                 f"skipping forecast for inactive product."
             )
             continue
 
-        # Split the SKU-specific data into train and test sets
-        train, test = split_train_test(sku_data)
+        # Split the MLB-specific data into train and test sets
+        train, test = split_train_test(mlb_data)
 
-        # Skip SKUs with insufficient training data
+        # Skip MLBs with insufficient training data
         if train.empty or len(train) < 10:  # Need minimum training samples
             logging.warning(
-                f"SKU {sku} has insufficient training data ({len(train) if not train.empty else 0} samples); skipping forecast."
+                f"MLB {mlb} (SKU {sku}) has insufficient training data ({len(train) if not train.empty else 0} samples); skipping forecast."
             )
             continue
 
@@ -211,7 +218,7 @@ def forecast_future_sales_with_split(data: pd.DataFrame, forecast_days: int) -> 
         model = train_xgboost_model(train, test)
 
         # Use current date for forecasting to ensure predictions are always for the future
-        last_date = sku_data.index.max()
+        last_date = mlb_data.index.max()
         today = pd.Timestamp.now().normalize()
         future_start = today + pd.Timedelta(days=1)
         future_dates = pd.date_range(
@@ -219,11 +226,11 @@ def forecast_future_sales_with_split(data: pd.DataFrame, forecast_days: int) -> 
         )
 
         target = "quant"
-        # Initialize baseline values from the full sku_data
-        if len(sku_data[target]) >= 3:
-            last_values = list(sku_data[target].iloc[-3:])
+        # Initialize baseline values from the full mlb_data
+        if len(mlb_data[target]) >= 3:
+            last_values = list(mlb_data[target].iloc[-3:])
         else:
-            last_values = [sku_data[target].iloc[-1]] * 3
+            last_values = [mlb_data[target].iloc[-1]] * 3
 
         predictions = []
         for date in future_dates:
@@ -247,9 +254,10 @@ def forecast_future_sales_with_split(data: pd.DataFrame, forecast_days: int) -> 
             last_values.append(pred)
 
         forecast_df = pd.DataFrame({"prediction": predictions}, index=future_dates)
-        sku_forecasts[sku] = forecast_df
+        # Store forecast with MLB as key and include SKU for reference
+        mlb_forecasts[mlb] = (forecast_df, sku)
 
-    return sku_forecasts
+    return mlb_forecasts
 
 
 def save_regressors(regressors: dict, filepath: Path) -> None:
