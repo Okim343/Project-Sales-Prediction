@@ -4,6 +4,7 @@
 *.pyc
 *__pycache__
 .mypy_cache
+.DS_Store
 
 # pytask
 .pytask.sqlite3
@@ -36,3 +37,4 @@ Data_Thiago
 .claude/
 CLAUDE.md
 continuous-learning-implementation.md
+.DS_Store
