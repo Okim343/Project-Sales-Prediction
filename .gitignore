@@ -25,8 +25,10 @@ bld/
 *.run.xml
 *.synctex.gz
 
-*.DS_Store
+.DS_Store
 
 # directories
 Data_Thiago
 CLAUDE.md
+continuous-learning-implementation.md
+.claude/
