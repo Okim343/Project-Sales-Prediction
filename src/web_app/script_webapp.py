@@ -11,6 +11,7 @@ from typing import List, Optional
 
 import dash
 from dash import dcc, html, dash_table, Input, Output
+import dash.dependencies
 import pandas as pd
 import plotly.express as px
 
@@ -58,7 +59,7 @@ def get_forecast_data(force_refresh: bool = False) -> pd.DataFrame:
 
     if cache_valid:
         logger.info("Using cached forecast data")
-        return _cached_data
+        return _cached_data  # type: ignore
 
     try:
         logger.info("Fetching fresh forecast data from database...")
@@ -136,23 +137,59 @@ def create_app() -> dash.Dash:
     app = dash.Dash(__name__)
     app.title = "SKU Forecast Dashboard"
 
-    # Get initial data for layout
-    try:
-        df = get_forecast_data()
-        sku_options = get_unique_skus()
-
-        if df.empty or not sku_options:
-            logger.warning("No forecast data available for dashboard initialization")
-            # Create minimal layout with no data message
-            app.layout = create_no_data_layout()
-        else:
-            app.layout = create_main_layout(df, sku_options)
-
-    except Exception as e:
-        logger.error(f"Failed to initialize app layout: {e}")
-        app.layout = create_error_layout(str(e))
+    # Create layout with authentication wrapper
+    app.layout = create_auth_wrapper()
 
     return app
+
+
+def create_auth_wrapper() -> html.Div:
+    """Create the authentication wrapper layout."""
+    return html.Div(
+        [
+            dcc.Store(id="session-store", storage_type="session"),
+            html.Div(id="page-content"),
+        ]
+    )
+
+
+def create_login_layout() -> html.Div:
+    """Create the login layout."""
+    return html.Div(
+        [
+            html.Div(
+                [
+                    html.H1("Sales Forecast Dashboard", className="dashboard-title"),
+                    html.Div(
+                        [
+                            html.H3("Please enter password to access:"),
+                            dcc.Input(
+                                id="password-input",
+                                type="password",
+                                placeholder="Enter password...",
+                                style={
+                                    "padding": "10px",
+                                    "margin": "10px",
+                                    "width": "200px",
+                                },
+                            ),
+                            html.Button(
+                                "Login",
+                                id="login-button",
+                                style={"padding": "10px 20px", "margin": "10px"},
+                            ),
+                            html.Div(
+                                id="login-status",
+                                style={"color": "red", "margin": "10px"},
+                            ),
+                        ],
+                        style={"text-align": "center", "padding": "50px"},
+                    ),
+                ],
+                style={"text-align": "center", "margin-top": "100px"},
+            )
+        ]
+    )
 
 
 def create_main_layout(df: pd.DataFrame, sku_options: List[str]) -> html.Div:
@@ -210,6 +247,12 @@ def create_main_layout(df: pd.DataFrame, sku_options: List[str]) -> html.Div:
                     ),
                     html.Button(
                         "Refresh Data", id="refresh-button", className="refresh-btn"
+                    ),
+                    html.Button(
+                        "Logout",
+                        id="logout-button",
+                        className="refresh-btn",
+                        style={"margin-left": "10px", "background-color": "#dc3545"},
                     ),
                 ],
                 className="controls",
@@ -291,6 +334,63 @@ def create_error_layout(error_message: str) -> html.Div:
 
 # Create the app instance
 app = create_app()
+
+
+# Authentication callbacks
+@app.callback(
+    [Output("session-store", "data"), Output("login-status", "children")],
+    [Input("login-button", "n_clicks")],
+    [dash.dependencies.State("password-input", "value")],
+)
+def authenticate_user(n_clicks, password):
+    """Authenticate user with password."""
+    if n_clicks is None:
+        return {"authenticated": False}, ""
+
+    if password == "thienri":
+        return {"authenticated": True}, ""
+    else:
+        return {"authenticated": False}, "Incorrect password. Please try again."
+
+
+@app.callback(
+    Output("session-store", "data", allow_duplicate=True),
+    [Input("logout-button", "n_clicks")],
+    prevent_initial_call=True,
+)
+def logout_user(n_clicks):
+    """Logout user by clearing session."""
+    if n_clicks:
+        return {"authenticated": False}
+    return dash.no_update
+
+
+@app.callback(Output("page-content", "children"), [Input("session-store", "data")])
+def display_page(session_data):
+    """Display appropriate page based on authentication status."""
+    if session_data is None:
+        session_data = {"authenticated": False}
+
+    if session_data.get("authenticated", False):
+        # User is authenticated, show main dashboard
+        try:
+            df = get_forecast_data()
+            sku_options = get_unique_skus()
+
+            if df.empty or not sku_options:
+                logger.warning(
+                    "No forecast data available for dashboard initialization"
+                )
+                return create_no_data_layout()
+            else:
+                return create_main_layout(df, sku_options)
+
+        except Exception as e:
+            logger.error(f"Failed to load dashboard: {e}")
+            return create_error_layout(str(e))
+    else:
+        # User is not authenticated, show login page
+        return create_login_layout()
 
 
 @app.callback(
@@ -404,12 +504,13 @@ def main():
             return
 
         logger.info("Database connection successful")
-        logger.info("Dashboard available at: http://127.0.0.1:8050")
+        logger.info("Dashboard available at: http://0.0.0.0:8050")
+        logger.info("External access available at: http://YOUR_IP_ADDRESS:8050")
 
         # Run the app
         app.run(
             debug=False,  # Set to True for development
-            host="127.0.0.1",
+            host="0.0.0.0",
             port=8050,
             dev_tools_hot_reload=False,
         )

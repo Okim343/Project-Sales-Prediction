@@ -64,6 +64,7 @@ class AppConfig:
     FORECAST_DAYS = int(os.getenv("FORECAST_DAYS", "30"))
     FORECAST_DAYS_LONG = int(os.getenv("FORECAST_DAYS_LONG", "90"))
     DEFAULT_SKU = os.getenv("DEFAULT_SKU", "TC213")
+    ACTIVE_SKU_DAYS_THRESHOLD = int(os.getenv("ACTIVE_SKU_DAYS_THRESHOLD", "30"))
 
     # Model Features
     MODEL_FEATURES = ["day_of_week", "day_of_month", "rolling_mean_3", "lag_1", "price"]

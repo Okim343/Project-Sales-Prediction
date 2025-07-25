@@ -7,6 +7,7 @@ import pickle
 from pathlib import Path
 
 from estimation.data_splitting import split_train_test
+from config import AppConfig
 
 from sklearn.multioutput import MultiOutputRegressor
 
@@ -40,6 +41,18 @@ def forecast_future_sales_direct(data: pd.DataFrame, forecast_days: int) -> dict
         if (last_date - first_date) < pd.Timedelta(days=365):
             logging.warning(
                 f"SKU {sku} has less than one year of data; skipping forecast."
+            )
+            continue
+
+        # Skip SKUs with no recent data (inactive products)
+        today = pd.Timestamp.now().normalize()
+        cutoff_date = today - pd.Timedelta(days=AppConfig.ACTIVE_SKU_DAYS_THRESHOLD)
+        if last_date < cutoff_date:
+            days_since_last_data = (today - last_date).days
+            logging.warning(
+                f"SKU {sku} has no data in the last {AppConfig.ACTIVE_SKU_DAYS_THRESHOLD} days "
+                f"(last data: {last_date.date()}, {days_since_last_data} days ago); "
+                f"skipping forecast for inactive product."
             )
             continue
 
@@ -82,10 +95,22 @@ def forecast_future_sales_direct(data: pd.DataFrame, forecast_days: int) -> dict
         )
         predictions = multi_model.predict(last_features)[0]
 
-        # Build forecast DataFrame with future dates as index
+        # Build forecast DataFrame with future dates starting from tomorrow
+        # Use current date instead of last_date to ensure predictions are always for the future
+        today = pd.Timestamp.now().normalize()
+        future_start = today + pd.Timedelta(days=1)
         future_dates = pd.date_range(
-            start=last_date + pd.Timedelta(days=1), periods=forecast_days, freq="D"
+            start=future_start, periods=forecast_days, freq="D"
         )
+
+        # Log data freshness information
+        data_lag_days = (today - last_date).days
+        logging.info(
+            f"SKU {sku}: Training data ends on {last_date.date()}, "
+            f"predicting from {future_start.date()} for {forecast_days} days "
+            f"(data lag: {data_lag_days} days)"
+        )
+
         forecast_df = pd.DataFrame({"prediction": predictions}, index=future_dates)
         sku_forecasts[sku] = forecast_df
 
@@ -121,6 +146,18 @@ def forecast_future_sales_with_split(data: pd.DataFrame, forecast_days: int) -> 
             )
             continue
 
+        # Skip SKUs with no recent data (inactive products)
+        today = pd.Timestamp.now().normalize()
+        cutoff_date = today - pd.Timedelta(days=AppConfig.ACTIVE_SKU_DAYS_THRESHOLD)
+        if last_date < cutoff_date:
+            days_since_last_data = (today - last_date).days
+            logging.warning(
+                f"SKU {sku} has no data in the last {AppConfig.ACTIVE_SKU_DAYS_THRESHOLD} days "
+                f"(last data: {last_date.date()}, {days_since_last_data} days ago); "
+                f"skipping forecast for inactive product."
+            )
+            continue
+
         # Split the SKU-specific data into train and test sets
         train, test = split_train_test(sku_data)
 
@@ -134,10 +171,20 @@ def forecast_future_sales_with_split(data: pd.DataFrame, forecast_days: int) -> 
         # Train the model using the train and test split
         model = train_xgboost_model(train, test)
 
-        # Use the full SKU data for forecasting baseline (last available actual data)
+        # Use current date for forecasting to ensure predictions are always for the future
         last_date = sku_data.index.max()
+        today = pd.Timestamp.now().normalize()
+        future_start = today + pd.Timedelta(days=1)
         future_dates = pd.date_range(
-            start=last_date + pd.Timedelta(days=1), periods=forecast_days, freq="D"
+            start=future_start, periods=forecast_days, freq="D"
+        )
+
+        # Log data freshness information
+        data_lag_days = (today - last_date).days
+        logging.info(
+            f"SKU {sku}: Training data ends on {last_date.date()}, "
+            f"predicting from {future_start.date()} for {forecast_days} days "
+            f"(data lag: {data_lag_days} days)"
         )
 
         target = "quant"
