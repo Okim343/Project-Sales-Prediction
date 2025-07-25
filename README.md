@@ -166,8 +166,6 @@ import_regressor = True  # Set to False to train new models
 
 ## Database Configuration
 
-oioioi
-
 - **Host**: 172.27.40.210:5432
 - **Database**: "Mercado Livre"
 - **Input View**: `public.view_enrico`
