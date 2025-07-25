@@ -52,10 +52,11 @@ def _convert_date_column(data: pd.DataFrame):
     data = data.copy()
     # Convert the 'date' column to datetime
     data["date"] = pd.to_datetime(data["date"], errors="coerce")
-    # Remove timezone: if the timestamp is timezone-aware, use tz_convert(None) to remove the tz info.
-    data["date"] = data["date"].apply(
-        lambda x: x.tz_convert(None) if x is not pd.NaT and x.tzinfo is not None else x
-    )
+
+    # Remove timezone properly
+    if data["date"].dt.tz is not None:
+        data["date"] = data["date"].dt.tz_localize(None)
+
     # Normalize the datetime to midnight (i.e., keep only the date part)
     data["date"] = data["date"].dt.normalize()
     return data

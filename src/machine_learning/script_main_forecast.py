@@ -25,6 +25,62 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def validate_data_freshness(data: pd.DataFrame, max_age_days: int = 7) -> None:
+    """
+    Validate that the cached data is fresh enough to use.
+    Issues warnings if data is stale.
+
+    Args:
+        data: DataFrame containing the raw data
+        max_age_days: Maximum acceptable age of data in days
+    """
+    try:
+        # Determine date column
+        date_col = None
+        for col in ["date_created", "date"]:
+            if col in data.columns:
+                date_col = col
+                break
+
+        if not date_col:
+            logger.warning(
+                "No date column found in cached data - cannot validate freshness"
+            )
+            return
+
+        # Parse dates and find the most recent
+        dates = pd.to_datetime(data[date_col], errors="coerce")
+        most_recent = dates.max()
+
+        if pd.isna(most_recent):
+            logger.warning("Could not parse dates in cached data")
+            return
+
+        # Calculate age of data
+        today = pd.Timestamp.now().normalize()
+        days_old = (today - most_recent.normalize()).days
+
+        logger.info(
+            f"Cached data age: {days_old} days (most recent: {most_recent.date()})"
+        )
+
+        if days_old > max_age_days:
+            logger.warning(
+                f"⚠️  STALE DATA WARNING: Cached data is {days_old} days old! "
+                f"This may cause all SKUs to be marked as inactive. "
+                f"Consider running with import_data=True or running refresh_data.py"
+            )
+        elif days_old > 2:
+            logger.info(
+                f"📅 Cached data is {days_old} days old - still usable but consider refreshing"
+            )
+        else:
+            logger.info("✅ Cached data is fresh")
+
+    except Exception as e:
+        logger.warning(f"Error validating data freshness: {e}")
+
+
 def load_or_import_data(import_data: bool) -> pd.DataFrame:
     """Load data from file or import fresh data from database."""
     if import_data:
@@ -37,8 +93,20 @@ def load_or_import_data(import_data: bool) -> pd.DataFrame:
         return data
     else:
         logger.info("Loading cached data from CSV...")
+
+        # Check if cached file exists
+        if not AppConfig.RAW_DATA_FILE.exists():
+            logger.warning(f"Cached data file not found: {AppConfig.RAW_DATA_FILE}")
+            logger.info("Falling back to importing fresh data from database...")
+            data = db_manager.import_data_from_sql()
+            data.to_csv(AppConfig.RAW_DATA_FILE, index=False)
+            return data
+
         data = pd.read_csv(AppConfig.RAW_DATA_FILE, engine="pyarrow")
-        logger.info("Cached data loaded successfully!")
+
+        # Validate data freshness
+        validate_data_freshness(data)
+
         return data
 
 

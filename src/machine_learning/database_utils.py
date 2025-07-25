@@ -10,7 +10,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
-from config import DatabaseConfig
+from config import DatabaseConfig, AppConfig
 
 logger = logging.getLogger(__name__)
 
@@ -39,14 +39,15 @@ class DatabaseManager:
         return self._engine
 
     def import_data_from_sql(
-        self, view: Optional[str] = None, chunksize: int = 10000
+        self, view: Optional[str] = None, chunksize: Optional[int] = None
     ) -> pd.DataFrame:
         """
         Import data from PostgreSQL database with improved error handling.
 
         Args:
             view: Database view name (defaults to config value)
-            chunksize: Number of rows to read per chunk
+            chunksize: Number of rows to read per chunk (None for direct import,
+                      recommended for datasets under 1M records)
 
         Returns:
             DataFrame containing the imported data
@@ -58,11 +59,15 @@ class DatabaseManager:
 
         try:
             logger.info(f"Importing data from {view}...")
-            query = f"SELECT * FROM {view}"
+            query = f"SELECT * FROM {view} ORDER BY date_created DESC"  # Import newest first
 
-            # Read data in chunks to handle large datasets
-            chunks = pd.read_sql_query(query, self.engine, chunksize=chunksize)
-            df = pd.concat(chunks, ignore_index=True)
+            if chunksize is None:
+                # Direct import without chunking (recommended for complete data)
+                df = pd.read_sql_query(query, self.engine)
+            else:
+                # Read data in chunks to handle large datasets
+                chunks = pd.read_sql_query(query, self.engine, chunksize=chunksize)
+                df = pd.concat(chunks, ignore_index=True)
 
             # Log memory usage information
             memory_usage_mb = df.memory_usage(deep=True).sum() / (1024 * 1024)
@@ -114,6 +119,14 @@ class DatabaseManager:
                 return
 
             combined_df = pd.concat(all_forecasts, ignore_index=True)
+
+            # Debug: Check data types before saving to database
+            logger.info(
+                f"Database save debug - prediction column dtype: {combined_df['prediction'].dtype}"
+            )
+            logger.info(
+                f"Database save debug - prediction sample: {combined_df['prediction'].head()}"
+            )
 
             # Save to database with error handling
             combined_df.to_sql(
@@ -191,6 +204,25 @@ def import_data_from_sql(
         DatabaseConfig.HOST = original_config.HOST
         DatabaseConfig.PORT = original_config.PORT
         DatabaseConfig.DBNAME = original_config.DBNAME
+
+
+def validate_data_freshness(feature_data: pd.DataFrame) -> None:
+    """Quick validation that data is fresh enough for forecasting."""
+    try:
+        if isinstance(feature_data.index, pd.DatetimeIndex):
+            global_max = feature_data.index.max()
+            days_since_newest = (
+                pd.Timestamp.now().normalize() - global_max.normalize()
+            ).days
+
+            if days_since_newest > AppConfig.ACTIVE_SKU_DAYS_THRESHOLD:
+                logger.warning(
+                    f"Data is {days_since_newest} days old - may affect SKU activity detection"
+                )
+            else:
+                logger.info(f"Data freshness: {days_since_newest} days old")
+    except Exception as e:
+        logger.debug(f"Could not validate data freshness: {e}")
 
 
 # Global database manager instance

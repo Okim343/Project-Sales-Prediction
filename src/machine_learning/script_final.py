@@ -7,7 +7,7 @@ import logging
 import pandas as pd
 
 from config import AppConfig
-from database_utils import db_manager
+from database_utils import db_manager, validate_data_freshness
 from data_management.clean_sql_data import process_sales_data
 from data_management.feature_creation import create_time_series_features
 from estimation.model_forecast import forecast_future_sales_direct
@@ -43,6 +43,9 @@ def main():
         logger.info("Creating time series features...")
         feature_data = create_time_series_features(clean_data)
         logger.info("Data processing complete!")
+
+        # Quick data freshness check
+        validate_data_freshness(feature_data)
 
         # Generate forecasts
         logger.info(f"Generating {AppConfig.FORECAST_DAYS_LONG}-day forecasts...")

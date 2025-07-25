@@ -11,6 +11,8 @@
 
 # bld
 bld/
+env/
+.ruff_cache/
 
 # latex
 *.aux
@@ -33,3 +35,4 @@ Data_Thiago
 # Claude
 .claude/
 CLAUDE.md
+continuous-learning-implementation.md

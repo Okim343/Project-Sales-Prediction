@@ -30,10 +30,12 @@ database.
 
 **What it does**:
 
-- Imports fresh data from PostgreSQL database
-- Processes and cleans the sales data
+- Imports fresh data from PostgreSQL database (using direct import for data
+  completeness)
+- Validates data freshness to ensure recent data is available
+- Processes and cleans the sales data with improved timezone handling
 - Creates time series features
-- Generates 90-day forecasts for all SKUs
+- Generates 90-day forecasts for all SKUs using normal rounding (to nearest integer)
 - Saves forecasts directly to the database (`public.sku_forecats_90_days` table)
 - No user interaction required
 
@@ -134,11 +136,14 @@ XGBOOST_PARAMS = {
 }
 ```
 
-**Script Behavior**: Edit the boolean flags in each script:
+**Script Behavior**:
+
+- `script_final.py`: Always imports fresh data from database (no caching)
+- `script_main.py` and `script_main_forecast.py`: Edit the boolean flags in each script:
 
 ```python
 # In script_main.py and script_main_forecast.py
-import_data = False  # Set to True to fetch fresh data
+import_data = True  # Set to True to fetch fresh data (recommended)
 import_regressor = True  # Set to False to train new models
 ```
 
@@ -189,12 +194,6 @@ import_regressor = True  # Set to False to train new models
      `python src/machine_learning/script_main_forecast.py`
    - **For web dashboard**: `python src/web_app/script_webapp.py`
 
-## Testing
-
-- Run tests: `pytest`
-- Run tests with coverage: `pytest --cov`
-- Run tests in parallel: `pytest -n auto`
-
 ## Development Notes
 
 - Models are trained per SKU individually using XGBoost
@@ -202,3 +201,10 @@ import_regressor = True  # Set to False to train new models
 - All scripts include comprehensive error handling and logging
 - The web application includes data caching for improved performance
 - Forecasts are generated using Multi Step Direct Forecasting methodology
+- **Data Import**: Uses direct database import (no chunking) to ensure all recent data
+  is captured
+- **Timezone Handling**: Properly converts timezone-aware dates to avoid data processing
+  issues
+- **Prediction Rounding**: Uses normal rounding (5.4→5, 5.6→6) instead of ceiling for
+  more accurate forecasts
+- **Data Freshness**: Validates data recency to prevent forecasting with stale data

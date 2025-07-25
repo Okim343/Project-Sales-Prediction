@@ -30,25 +30,42 @@ def forecast_future_sales_direct(data: pd.DataFrame, forecast_days: int) -> dict
     sku_forecasts = {}
     FEATURES = ["day_of_week", "day_of_month", "rolling_mean_3", "lag_1"]
 
+    # Debug logging: track filtering statistics
+    total_skus = len(data["sku"].unique())
+    skipped_inactive = skipped_insufficient = skipped_training = processed = 0
+    logging.info(f"Starting forecast for {total_skus} total SKUs")
+
+    # Quick data freshness check
+    if hasattr(data, "index") and isinstance(data.index, pd.DatetimeIndex):
+        all_dates = data.index
+    elif "date" in data.columns:
+        all_dates = pd.to_datetime(data["date"])
+    else:
+        all_dates = None
+
+    if all_dates is not None:
+        global_max = all_dates.max()
+        today = pd.Timestamp.now().normalize()
+        days_old = (today - global_max).days
+        logging.info(
+            f"Processing data from {all_dates.min().date()} to {global_max.date()} ({days_old} days old)"
+        )
+
     for sku in data["sku"].unique():
         sku_data = data[data["sku"] == sku].copy()
         if not isinstance(sku_data.index, pd.DatetimeIndex):
             sku_data.index = pd.to_datetime(sku_data.index)
         sku_data = sku_data.sort_index()
 
-        # Ensure SKU has at least one year of data
-        first_date = sku_data.index.min()
+        # Get date range for logging purposes
         last_date = sku_data.index.max()
-        if (last_date - first_date) < pd.Timedelta(days=365):
-            logging.warning(
-                f"SKU {sku} has less than one year of data; skipping forecast."
-            )
-            continue
 
         # Skip SKUs with no recent data (inactive products)
         today = pd.Timestamp.now().normalize()
         cutoff_date = today - pd.Timedelta(days=AppConfig.ACTIVE_SKU_DAYS_THRESHOLD)
+
         if last_date < cutoff_date:
+            skipped_inactive += 1
             days_since_last_data = (today - last_date).days
             logging.warning(
                 f"SKU {sku} has no data in the last {AppConfig.ACTIVE_SKU_DAYS_THRESHOLD} days "
@@ -58,9 +75,15 @@ def forecast_future_sales_direct(data: pd.DataFrame, forecast_days: int) -> dict
             continue
 
         # Ensure there are enough rows for multi-step forecasting:
-        if len(sku_data) < forecast_days + 1:
+        # Need at least forecast_days + sufficient training samples
+        min_required_length = (
+            forecast_days + 15
+        )  # Need extra data for meaningful training
+        if len(sku_data) < min_required_length:
+            skipped_insufficient += 1
             logging.warning(
-                f"SKU {sku} does not have enough data for multi-step forecasting; skipping."
+                f"SKU {sku} has insufficient data ({len(sku_data)} rows) for {forecast_days}-day "
+                f"forecasting (requires at least {min_required_length} rows); skipping."
             )
             continue
 
@@ -77,6 +100,14 @@ def forecast_future_sales_direct(data: pd.DataFrame, forecast_days: int) -> dict
         y_columns = [f"quant_{i+1}" for i in range(forecast_days)]
         y_train = pd.DataFrame(y_train, columns=y_columns)
 
+        # Validate that we have sufficient training data
+        if len(X_train) == 0 or len(y_train) == 0:
+            skipped_training += 1
+            logging.warning(
+                f"SKU {sku} generated empty training set after processing; skipping forecast."
+            )
+            continue
+
         # Train multi-output regressor with XGBoost as the base estimator
         base_model = xgb.XGBRegressor(
             base_score=0.5,
@@ -90,14 +121,12 @@ def forecast_future_sales_direct(data: pd.DataFrame, forecast_days: int) -> dict
         multi_model.fit(X_train, y_train)
 
         # For forecasting, use the last available sample from training as input
-        # (alternatively, you might compute features for the current day)
-        last_features = sku_data.iloc[-forecast_days - 1][FEATURES].values.reshape(
-            1, -1
-        )
+        # Fix: Use the last row instead of potentially out-of-bounds index
+        last_features = sku_data.iloc[-1][FEATURES].values.reshape(1, -1)
         predictions = multi_model.predict(last_features)[0]
 
-        # Round predictions up to integers (products sold in whole units)
-        predictions = np.ceil(predictions).astype(int)
+        # Round predictions to nearest integers (products sold in whole units)
+        predictions = np.round(predictions).astype(int)
 
         # Build forecast DataFrame with future dates starting from tomorrow
         # Use current date instead of last_date to ensure predictions are always for the future
@@ -107,16 +136,22 @@ def forecast_future_sales_direct(data: pd.DataFrame, forecast_days: int) -> dict
             start=future_start, periods=forecast_days, freq="D"
         )
 
-        # Log data freshness information
-        data_lag_days = (today - last_date).days
-        logging.info(
-            f"SKU {sku}: Training data ends on {last_date.date()}, "
-            f"predicting from {future_start.date()} for {forecast_days} days "
-            f"(data lag: {data_lag_days} days)"
-        )
-
         forecast_df = pd.DataFrame({"prediction": predictions}, index=future_dates)
         sku_forecasts[sku] = forecast_df
+        processed += 1
+
+        # Log processing progress occasionally
+        if processed % 50 == 0:
+            logging.info(f"Processed {processed} SKUs so far...")
+
+    # Final processing summary
+    logging.info(
+        f"Forecast Summary - Total: {total_skus}, "
+        f"Skipped (inactive): {skipped_inactive}, "
+        f"Skipped (insufficient data): {skipped_insufficient}, "
+        f"Skipped (empty training): {skipped_training}, "
+        f"Successfully processed: {processed}"
+    )
 
     return sku_forecasts
 
@@ -166,9 +201,9 @@ def forecast_future_sales_with_split(data: pd.DataFrame, forecast_days: int) -> 
         train, test = split_train_test(sku_data)
 
         # Skip SKUs with insufficient training data
-        if train.empty:
+        if train.empty or len(train) < 10:  # Need minimum training samples
             logging.warning(
-                f"SKU {sku} has insufficient data for training; skipping forecast."
+                f"SKU {sku} has insufficient training data ({len(train) if not train.empty else 0} samples); skipping forecast."
             )
             continue
 
@@ -181,14 +216,6 @@ def forecast_future_sales_with_split(data: pd.DataFrame, forecast_days: int) -> 
         future_start = today + pd.Timedelta(days=1)
         future_dates = pd.date_range(
             start=future_start, periods=forecast_days, freq="D"
-        )
-
-        # Log data freshness information
-        data_lag_days = (today - last_date).days
-        logging.info(
-            f"SKU {sku}: Training data ends on {last_date.date()}, "
-            f"predicting from {future_start.date()} for {forecast_days} days "
-            f"(data lag: {data_lag_days} days)"
         )
 
         target = "quant"
@@ -215,7 +242,7 @@ def forecast_future_sales_with_split(data: pd.DataFrame, forecast_days: int) -> 
             )
 
             pred = model.predict(features_future)[0]
-            pred = np.ceil(pred).astype(int)  # Round up to integer
+            pred = np.round(pred).astype(int)  # Round to nearest integer
             predictions.append(pred)
             last_values.append(pred)
 
@@ -251,12 +278,7 @@ def train_xgboost_model(train: pd.DataFrame, test: pd.DataFrame) -> xgb.XGBRegre
     _fail_if_train_test_empty(train, test)
     _fail_if_target_contains_nan(train, test)
 
-    FEATURES = [
-        "day_of_week",
-        "day_of_month",
-        "rolling_mean_3",
-        "lag_1",
-    ]
+    FEATURES = ["day_of_week", "day_of_month", "rolling_mean_3", "lag_1"]
     target = "quant"
 
     x_train = train[FEATURES]
