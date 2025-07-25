@@ -51,4 +51,4 @@ def save_forecasts_to_sql(
 
     # Create a connection engine and write the DataFrame to SQL
     engine = get_connection_engine()
-    final_df.to_sql(table_name, engine, if_exists=if_exists, index=False)
+    final_df.to_sql(table_name, engine, if_exists=if_exists, index=False)  # type: ignore

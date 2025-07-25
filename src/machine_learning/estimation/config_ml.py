@@ -2,10 +2,16 @@
 
 from pathlib import Path
 
-SRC = Path(__file__).resolve()
+# Get the path to this file and resolve it
+SRC = Path(__file__).parent.resolve()
 
-ROOT = SRC.joinpath("..", "..").resolve()
+# Navigate up to the machine_learning directory, then to root
+ROOT = SRC.parent.parent.resolve()
 
-BLD = ROOT.joinpath("bld").resolve()
+# Build and data directories
+BLD = ROOT / "bld"
+DATA = ROOT / "data"
 
-DATA = ROOT.joinpath("data").resolve()
+# Ensure directories exist
+BLD.mkdir(exist_ok=True)
+DATA.mkdir(exist_ok=True)

@@ -4,6 +4,7 @@
 *.pyc
 *__pycache__
 .mypy_cache
+.DS_Store
 
 # pytask
 .pytask.sqlite3
@@ -11,6 +12,8 @@
 
 # bld
 bld/
+env/
+.ruff_cache/
 
 # latex
 *.aux
@@ -25,10 +28,13 @@ bld/
 *.run.xml
 *.synctex.gz
 
-.DS_Store
+*.DS_Store
 
 # directories
 Data_Thiago
+
+# Claude
+.claude/
 CLAUDE.md
 continuous-learning-implementation.md
-.claude/
+.DS_Store
