@@ -15,6 +15,7 @@ bld/
 env/
 .ruff_cache/
 data/
+src/machine_learning/archive
 
 # latex
 *.aux

@@ -13,7 +13,9 @@ from config import AppConfig
 from sklearn.multioutput import MultiOutputRegressor
 
 
-def forecast_future_sales_direct(data: pd.DataFrame, forecast_days: int) -> dict:
+def forecast_future_sales_direct(
+    data: pd.DataFrame, forecast_days: int
+) -> tuple[dict, dict]:
     """
     For each MLB in the data, perform a train/test split as usual,
     then train a multi-output XGBoost model using a direct forecasting approach:
@@ -25,9 +27,12 @@ def forecast_future_sales_direct(data: pd.DataFrame, forecast_days: int) -> dict
         forecast_days (int): Number of days into the future to forecast.
 
     Returns:
-        dict: Dictionary where each key is a MLB and the value is a tuple of (forecast_df, sku).
+        tuple[dict, dict]: Tuple containing:
+            - mlb_forecasts: Dictionary where each key is a MLB and the value is a tuple of (forecast_df, sku).
+            - mlb_models: Dictionary where each key is a MLB and the value is the trained multi-output XGBoost model.
     """
     mlb_forecasts = {}
+    mlb_models = {}
     FEATURES = ["day_of_week", "day_of_month", "rolling_mean_3", "lag_1"]
 
     # Debug logging: track filtering statistics
@@ -123,6 +128,9 @@ def forecast_future_sales_direct(data: pd.DataFrame, forecast_days: int) -> dict
         multi_model = MultiOutputRegressor(base_model)
         multi_model.fit(X_train, y_train)
 
+        # Store the trained model for later use in continuous learning
+        mlb_models[mlb] = multi_model
+
         # For forecasting, use the last available sample from training as input
         # Fix: Use the last row instead of potentially out-of-bounds index
         last_features = mlb_data.iloc[-1][FEATURES].values.reshape(1, -1)
@@ -157,10 +165,12 @@ def forecast_future_sales_direct(data: pd.DataFrame, forecast_days: int) -> dict
         f"Successfully processed: {processed}"
     )
 
-    return mlb_forecasts
+    return mlb_forecasts, mlb_models
 
 
-def forecast_future_sales_with_split(data: pd.DataFrame, forecast_days: int) -> dict:
+def forecast_future_sales_with_split(
+    data: pd.DataFrame, forecast_days: int
+) -> tuple[dict, dict]:
     """
     For each MLB in the data, perform a train/test split as usual,
     train an XGBoost model using the train and test sets, and then forecast
@@ -171,10 +181,13 @@ def forecast_future_sales_with_split(data: pd.DataFrame, forecast_days: int) -> 
         forecast_days (int): Number of days into the future to forecast.
 
     Returns:
-        dict: Dictionary where each key is a MLB and the value is a tuple of (forecast_df, sku).
+        tuple[dict, dict]: Tuple containing:
+            - mlb_forecasts: Dictionary where each key is a MLB and the value is a tuple of (forecast_df, sku).
+            - mlb_models: Dictionary where each key is a MLB and the value is the trained XGBoost model.
     """
 
     mlb_forecasts = {}
+    mlb_models = {}
     for mlb in data["mlb"].unique():
         mlb_data = data[data["mlb"] == mlb].copy()
 
@@ -217,6 +230,9 @@ def forecast_future_sales_with_split(data: pd.DataFrame, forecast_days: int) -> 
         # Train the model using the train and test split
         model = train_xgboost_model(train, test)
 
+        # Store the trained model for later use in continuous learning
+        mlb_models[mlb] = model
+
         # Use current date for forecasting to ensure predictions are always for the future
         last_date = mlb_data.index.max()
         today = pd.Timestamp.now().normalize()
@@ -257,7 +273,7 @@ def forecast_future_sales_with_split(data: pd.DataFrame, forecast_days: int) -> 
         # Store forecast with MLB as key and include SKU for reference
         mlb_forecasts[mlb] = (forecast_df, sku)
 
-    return mlb_forecasts
+    return mlb_forecasts, mlb_models
 
 
 def save_regressors(regressors: dict, filepath: Path) -> None:

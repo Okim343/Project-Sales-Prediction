@@ -11,6 +11,7 @@ from database_utils import db_manager, validate_data_freshness
 from data_management.clean_sql_data import process_sales_data
 from data_management.feature_creation import create_time_series_features
 from estimation.model_forecast import forecast_future_sales_direct
+from estimation.model_storage import save_models
 
 # Configure plotting backend
 pd.options.plotting.backend = "matplotlib"
@@ -47,9 +48,9 @@ def main():
         # Quick data freshness check
         validate_data_freshness(feature_data)
 
-        # Generate forecasts
+        # Generate forecasts and train models
         logger.info(f"Generating {AppConfig.FORECAST_DAYS_LONG}-day forecasts...")
-        mlb_forecast = forecast_future_sales_direct(
+        mlb_forecast, mlb_models = forecast_future_sales_direct(
             feature_data, AppConfig.FORECAST_DAYS_LONG
         )
         logger.info("Forecasting complete!")
@@ -58,6 +59,13 @@ def main():
         logger.info("Saving forecasts to remote SQL database...")
         db_manager.save_forecasts_to_sql(mlb_forecast)
         logger.info("Forecasts saved successfully!")
+
+        # Save trained models for continuous learning
+        logger.info("Saving trained models for continuous learning...")
+        save_models(mlb_models, AppConfig.MLB_REGRESSORS_FILE)
+        logger.info(
+            f"Saved {len(mlb_models)} trained models to {AppConfig.MLB_REGRESSORS_FILE}"
+        )
 
     except Exception as e:
         logger.error(f"Pipeline failed with error: {e}")
