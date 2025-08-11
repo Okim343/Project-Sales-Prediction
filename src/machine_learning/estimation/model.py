@@ -31,51 +31,55 @@ logger = logging.getLogger(__name__)
 
 def train_model_for_each_sku(data: pd.DataFrame) -> Dict[str, xgb.XGBRegressor]:
     """
-    Train an XGBoost model for each SKU individually and save the predictions.
+    Train an XGBoost model for each MLB individually and save the predictions.
 
-    This function assumes that the input DataFrame contains a column 'sku' indicating
-    the SKU identifier. For each unique SKU, it splits the data into training and
+    This function assumes that the input DataFrame contains a column 'mlb' indicating
+    the MLB identifier. For each unique MLB, it splits the data into training and
     testing sets using the last month of data as the test set, trains the model, and
-    collects predictions. SKUs with insufficient training data are skipped.
+    collects predictions. MLBs with insufficient training data are skipped.
 
     Args:
-        data (pd.DataFrame): DataFrame containing data for multiple SKUs.
+        data (pd.DataFrame): DataFrame containing data for multiple MLBs.
 
     Returns:
-        Dict[str, xgb.XGBRegressor]: A dictionary where keys are SKU values and values are trained models.
+        Dict[str, xgb.XGBRegressor]: A dictionary where keys are MLB values and values are trained models.
     """
-    sku_models = {}
-    total_skus = len(data["sku"].unique())
+    mlb_models = {}
+    total_mlbs = len(data["mlb"].unique())
 
-    # Iterate over each unique SKU
-    for i, sku in enumerate(data["sku"].unique(), 1):
-        logger.info(f"Training model for SKU {sku} ({i}/{total_skus})")
+    # Iterate over each unique MLB
+    for i, mlb in enumerate(data["mlb"].unique(), 1):
+        # Get SKU for this MLB for logging purposes
+        mlb_data = data[data["mlb"] == mlb].copy()
+        sku = mlb_data["sku"].iloc[0] if "sku" in mlb_data.columns else "Unknown"
 
-        sku_data = data[data["sku"] == sku].copy()
+        logger.info(f"Training model for MLB {mlb} (SKU {sku}) ({i}/{total_mlbs})")
 
         # Ensure the index is a DatetimeIndex before splitting
-        if not isinstance(sku_data.index, pd.DatetimeIndex):
-            sku_data.index = pd.to_datetime(sku_data.index)
+        if not isinstance(mlb_data.index, pd.DatetimeIndex):
+            mlb_data.index = pd.to_datetime(mlb_data.index)
 
-        # Split the SKU-specific data into train and test sets
-        train, test = split_train_test(sku_data)
+        # Split the MLB-specific data into train and test sets
+        train, test = split_train_test(mlb_data)
 
-        # Skip SKUs with insufficient training data
+        # Skip MLBs with insufficient training data
         if train.empty:
-            logger.warning(f"SKU {sku} has insufficient data for training; skipping.")
+            logger.warning(
+                f"MLB {mlb} (SKU {sku}) has insufficient data for training; skipping."
+            )
             continue
 
         try:
-            # Train the model for this SKU
+            # Train the model for this MLB
             model = train_xgboost_model(train, test)
-            sku_models[sku] = model
-            logger.info(f"Successfully trained model for SKU {sku}")
+            mlb_models[mlb] = model
+            logger.info(f"Successfully trained model for MLB {mlb} (SKU {sku})")
         except Exception as e:
-            logger.error(f"Failed to train model for SKU {sku}: {e}")
+            logger.error(f"Failed to train model for MLB {mlb} (SKU {sku}): {e}")
             continue
 
-    logger.info(f"Training complete. Successfully trained {len(sku_models)} models.")
-    return sku_models
+    logger.info(f"Training complete. Successfully trained {len(mlb_models)} models.")
+    return mlb_models
 
 
 def save_regressors(regressors: Dict[str, xgb.XGBRegressor], filepath: Path) -> None:
@@ -83,7 +87,7 @@ def save_regressors(regressors: Dict[str, xgb.XGBRegressor], filepath: Path) -> 
     Save a dictionary of regressors to disk using pickle.
 
     Args:
-        regressors: Dictionary of trained regressors keyed by SKU.
+        regressors: Dictionary of trained regressors keyed by MLB.
         filepath: The file path where the dictionary should be saved.
     """
     try:

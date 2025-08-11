@@ -82,28 +82,28 @@ def get_forecast_data(force_refresh: bool = False) -> pd.DataFrame:
             return _cached_data
         else:
             logger.error("No cached data available, returning empty DataFrame")
-            return pd.DataFrame(columns=["date", "sku", "prediction"])
+            return pd.DataFrame(columns=["date", "mlb", "sku", "prediction"])
 
 
-def get_unique_skus() -> List[str]:
-    """Get list of unique SKUs from forecast data."""
+def get_unique_mlbs() -> List[str]:
+    """Get list of unique MLBs from forecast data."""
     try:
         df = get_forecast_data()
-        return sorted(df["sku"].unique()) if not df.empty else []
+        return sorted(df["mlb"].unique()) if not df.empty else []
     except Exception as e:
-        logger.error(f"Failed to get unique SKUs: {e}")
+        logger.error(f"Failed to get unique MLBs: {e}")
         return []
 
 
-def get_sku_date_range(sku: str) -> tuple[datetime.date, datetime.date]:
+def get_mlb_date_range(mlb: str) -> tuple[datetime.date, datetime.date]:
     """
-    Get the date range (min, max) for a specific SKU.
+    Get the date range (min, max) for a specific MLB.
 
     Args:
-        sku: The SKU to get date range for
+        mlb: The MLB to get date range for
 
     Returns:
-        Tuple of (min_date, max_date) for the SKU, or global range if SKU not found
+        Tuple of (min_date, max_date) for the MLB, or global range if MLB not found
     """
     try:
         df = get_forecast_data()
@@ -112,21 +112,21 @@ def get_sku_date_range(sku: str) -> tuple[datetime.date, datetime.date]:
             current_date = datetime.now().date()
             return current_date, current_date
 
-        if sku:
-            # Filter data for specific SKU
-            sku_data = df[df["sku"] == sku]
-            if not sku_data.empty:
-                min_date = sku_data["date"].min().date()
-                max_date = sku_data["date"].max().date()
+        if mlb:
+            # Filter data for specific MLB
+            mlb_data = df[df["mlb"] == mlb]
+            if not mlb_data.empty:
+                min_date = mlb_data["date"].min().date()
+                max_date = mlb_data["date"].max().date()
                 return min_date, max_date
 
-        # Fallback to global range if SKU not found or not specified
+        # Fallback to global range if MLB not found or not specified
         min_date = df["date"].min().date()
         max_date = df["date"].max().date()
         return min_date, max_date
 
     except Exception as e:
-        logger.error(f"Failed to get date range for SKU {sku}: {e}")
+        logger.error(f"Failed to get date range for MLB {mlb}: {e}")
         current_date = datetime.now().date()
         return current_date, current_date
 
@@ -135,7 +135,7 @@ def get_sku_date_range(sku: str) -> tuple[datetime.date, datetime.date]:
 def create_app() -> dash.Dash:
     """Create and configure the Dash application."""
     app = dash.Dash(__name__)
-    app.title = "SKU Forecast Dashboard"
+    app.title = "MLB Forecast Dashboard"
 
     # Create layout with authentication wrapper
     app.layout = create_auth_wrapper()
@@ -192,7 +192,7 @@ def create_login_layout() -> html.Div:
     )
 
 
-def create_main_layout(df: pd.DataFrame, sku_options: List[str]) -> html.Div:
+def create_main_layout(df: pd.DataFrame, mlb_options: List[str]) -> html.Div:
     """Create the main dashboard layout."""
     return html.Div(
         [
@@ -210,13 +210,13 @@ def create_main_layout(df: pd.DataFrame, sku_options: List[str]) -> html.Div:
                 [
                     html.Div(
                         [
-                            html.Label("Choose SKU:", className="control-label"),
+                            html.Label("Choose MLB:", className="control-label"),
                             dcc.Dropdown(
-                                id="sku-dropdown",
+                                id="mlb-dropdown",
                                 options=[
-                                    {"label": sku, "value": sku} for sku in sku_options
+                                    {"label": mlb, "value": mlb} for mlb in mlb_options
                                 ],
-                                value=sku_options[0] if sku_options else None,
+                                value=mlb_options[0] if mlb_options else None,
                                 className="control-input",
                             ),
                         ],
@@ -265,6 +265,7 @@ def create_main_layout(df: pd.DataFrame, sku_options: List[str]) -> html.Div:
                         id="forecast-table",
                         columns=[
                             {"name": "Date", "id": "date", "type": "datetime"},
+                            {"name": "MLB", "id": "mlb"},
                             {"name": "SKU", "id": "sku"},
                             {
                                 "name": "Prediction",
@@ -374,15 +375,15 @@ def display_page(session_data):
         # User is authenticated, show main dashboard
         try:
             df = get_forecast_data()
-            sku_options = get_unique_skus()
+            mlb_options = get_unique_mlbs()
 
-            if df.empty or not sku_options:
+            if df.empty or not mlb_options:
                 logger.warning(
                     "No forecast data available for dashboard initialization"
                 )
                 return create_no_data_layout()
             else:
-                return create_main_layout(df, sku_options)
+                return create_main_layout(df, mlb_options)
 
         except Exception as e:
             logger.error(f"Failed to load dashboard: {e}")
@@ -399,14 +400,14 @@ def display_page(session_data):
         Output("date-picker", "start_date"),
         Output("date-picker", "end_date"),
     ],
-    [Input("sku-dropdown", "value")],
+    [Input("mlb-dropdown", "value")],
     prevent_initial_call=False,
 )
-def update_date_picker(selected_sku: str):
+def update_date_picker(selected_mlb: str):
     """Update date picker range based on selected SKU."""
     try:
-        if not selected_sku:
-            # If no SKU selected, use global range
+        if not selected_mlb:
+            # If no MLB selected, use global range
             df = get_forecast_data()
             if df.empty:
                 current_date = datetime.now().date()
@@ -416,14 +417,14 @@ def update_date_picker(selected_sku: str):
             max_date = df["date"].max().date()
             return min_date, max_date, min_date, max_date
 
-        # Get SKU-specific date range
-        min_date, max_date = get_sku_date_range(selected_sku)
+        # Get MLB-specific date range
+        min_date, max_date = get_mlb_date_range(selected_mlb)
 
         # Return the date constraints and default start/end dates
         return min_date, max_date, min_date, max_date
 
     except Exception as e:
-        logger.error(f"Error updating date picker for SKU {selected_sku}: {e}")
+        logger.error(f"Error updating date picker for MLB {selected_mlb}: {e}")
         current_date = datetime.now().date()
         return current_date, current_date, current_date, current_date
 
@@ -431,14 +432,14 @@ def update_date_picker(selected_sku: str):
 @app.callback(
     [Output("forecast-graph", "figure"), Output("forecast-table", "data")],
     [
-        Input("sku-dropdown", "value"),
+        Input("mlb-dropdown", "value"),
         Input("date-picker", "start_date"),
         Input("date-picker", "end_date"),
         Input("refresh-button", "n_clicks"),
     ],
     prevent_initial_call=False,
 )
-def update_dashboard(selected_sku: str, start_date: str, end_date: str, n_clicks: int):
+def update_dashboard(selected_mlb: str, start_date: str, end_date: str, n_clicks: int):
     """Update the dashboard based on user inputs."""
     try:
         # Force refresh if refresh button was clicked
@@ -455,8 +456,8 @@ def update_dashboard(selected_sku: str, start_date: str, end_date: str, n_clicks
         # Filter data based on selections
         filtered_df = df.copy()
 
-        if selected_sku:
-            filtered_df = filtered_df[filtered_df["sku"] == selected_sku]
+        if selected_mlb:
+            filtered_df = filtered_df[filtered_df["mlb"] == selected_mlb]
 
         if start_date and end_date:
             filtered_df = filtered_df[
@@ -466,12 +467,19 @@ def update_dashboard(selected_sku: str, start_date: str, end_date: str, n_clicks
 
         # Create the forecast plot
         if not filtered_df.empty:
+            # Get SKU for display purposes
+            sku_for_display = (
+                filtered_df["sku"].iloc[0]
+                if "sku" in filtered_df.columns
+                else "Unknown"
+            )
+
             fig = px.line(
                 filtered_df,
                 x="date",
                 y="prediction",
-                title=f"Sales Forecast for SKU: {selected_sku}"
-                if selected_sku
+                title=f"Sales Forecast for MLB: {selected_mlb} (SKU: {sku_for_display})"
+                if selected_mlb
                 else "Sales Forecast",
                 labels={"prediction": "Predicted Sales", "date": "Date"},
             )
@@ -479,10 +487,12 @@ def update_dashboard(selected_sku: str, start_date: str, end_date: str, n_clicks
                 xaxis_title="Date", yaxis_title="Predicted Sales", hovermode="x unified"
             )
         else:
-            fig = px.line(title=f"No data available for SKU: {selected_sku}")
+            fig = px.line(title=f"No data available for MLB: {selected_mlb}")
 
         # Prepare table data
-        table_data = filtered_df[["date", "sku", "prediction"]].to_dict("records")
+        table_data = filtered_df[["date", "mlb", "sku", "prediction"]].to_dict(
+            "records"
+        )
 
         return fig, table_data
 

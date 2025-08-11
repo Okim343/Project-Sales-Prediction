@@ -67,7 +67,7 @@ def validate_data_freshness(data: pd.DataFrame, max_age_days: int = 7) -> None:
         if days_old > max_age_days:
             logger.warning(
                 f"⚠️  STALE DATA WARNING: Cached data is {days_old} days old! "
-                f"This may cause all SKUs to be marked as inactive. "
+                f"This may cause all MLBs to be marked as inactive. "
                 f"Consider running with import_data=True or running refresh_data.py"
             )
         elif days_old > 2:
@@ -114,38 +114,43 @@ def load_or_generate_forecasts(
     import_forecast: bool, feature_data: pd.DataFrame
 ) -> dict:
     """Load existing forecasts or generate new ones."""
-    if import_forecast and AppConfig.SKU_FORECAST_FILE.exists():
-        logger.info(f"Loading forecasts from {AppConfig.SKU_FORECAST_FILE}...")
-        return pd.read_pickle(AppConfig.SKU_FORECAST_FILE)
+    if import_forecast and AppConfig.MLB_FORECAST_FILE.exists():
+        logger.info(f"Loading forecasts from {AppConfig.MLB_FORECAST_FILE}...")
+        return pd.read_pickle(AppConfig.MLB_FORECAST_FILE)
     else:
         logger.info(f"Generating new {AppConfig.FORECAST_DAYS}-day forecasts...")
-        sku_forecast = forecast_future_sales_direct(
+        mlb_forecast = forecast_future_sales_direct(
             feature_data, AppConfig.FORECAST_DAYS
         )
 
         # Save forecasts for future use
-        save_regressors(sku_forecast, AppConfig.SKU_FORECAST_FILE)
+        save_regressors(mlb_forecast, AppConfig.MLB_FORECAST_FILE)
         logger.info("Forecasting complete and saved!")
-        return sku_forecast
+        return mlb_forecast
 
 
-def interactive_sku_selection(sku_forecast: dict) -> None:
-    """Handle interactive SKU selection and visualization."""
-    print_available_skus(AppConfig.SKU_FORECAST_FILE)
+def interactive_mlb_selection(mlb_forecast: dict) -> None:
+    """Handle interactive MLB selection and visualization."""
+    print_available_skus(
+        AppConfig.MLB_FORECAST_FILE
+    )  # Still uses print_available_skus function
 
-    # Get user input for SKU
-    sku = input("Please enter the SKU for predictions: ").strip()
+    # Get user input for MLB
+    mlb = input("Please enter the MLB for predictions: ").strip()
 
     # Generate and save visualization
-    forecast_df = sku_forecast.get(sku)
+    if mlb in mlb_forecast:
+        forecast_df, sku = mlb_forecast[mlb]
 
-    if forecast_df is not None and not forecast_df.empty:
-        fig = px.line(forecast_df, title=f"Forecast for SKU {sku}")
-        html_file = BLD / f"{sku}_forecast.html"
-        fig.write_html(html_file)
-        logger.info(f"Forecast plotted and saved as HTML: {html_file}")
+        if forecast_df is not None and not forecast_df.empty:
+            fig = px.line(forecast_df, title=f"Forecast for MLB {mlb} (SKU {sku})")
+            html_file = BLD / f"{mlb}_forecast.html"
+            fig.write_html(html_file)
+            logger.info(f"Forecast plotted and saved as HTML: {html_file}")
+        else:
+            logger.warning(f"No forecast available for MLB {mlb}")
     else:
-        logger.warning(f"No forecast available for SKU {sku}")
+        logger.warning(f"No forecast available for MLB {mlb}")
 
 
 def main():
@@ -170,14 +175,14 @@ def main():
         logger.info("Data processing complete!")
 
         # Load or generate forecasts
-        sku_forecast = load_or_generate_forecasts(import_forecast, feature_data)
+        mlb_forecast = load_or_generate_forecasts(import_forecast, feature_data)
 
-        # Interactive SKU selection and visualization
-        interactive_sku_selection(sku_forecast)
+        # Interactive MLB selection and visualization
+        interactive_mlb_selection(mlb_forecast)
 
         # Save forecasts to database
         logger.info("Saving forecasts to remote SQL database...")
-        db_manager.save_forecasts_to_sql(sku_forecast)
+        db_manager.save_forecasts_to_sql(mlb_forecast)
         logger.info("Forecasts saved to database successfully!")
 
     except Exception as e:
