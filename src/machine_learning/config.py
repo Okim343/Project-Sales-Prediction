@@ -39,6 +39,9 @@ class DatabaseConfig:
     DBNAME = os.getenv("DB_NAME", "Mercado Livre")
     VIEW = os.getenv("DB_VIEW", "public.view_enrico")
     FORECAST_TABLE = os.getenv("DB_FORECAST_TABLE", "public.mlb_forecasts_90_days")
+    TEST_FORECAST_TABLE = os.getenv(
+        "DB_TEST_FORECAST_TABLE", "public.test_mlb_forecasts_90_days"
+    )
 
     _engine: Optional[Engine] = None
 
@@ -68,6 +71,9 @@ class AppConfig:
         "DEFAULT_MLB", "TC213"
     )  # Will update once we know MLB codes
     ACTIVE_MLB_DAYS_THRESHOLD = int(os.getenv("ACTIVE_MLB_DAYS_THRESHOLD", "30"))
+
+    # Testing Configuration
+    TEST_MLB_COUNT = int(os.getenv("TEST_MLB_COUNT", "10"))
 
     # Model Features
     MODEL_FEATURES = ["day_of_week", "day_of_month", "rolling_mean_3", "lag_1", "price"]
