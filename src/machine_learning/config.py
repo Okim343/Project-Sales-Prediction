@@ -73,7 +73,7 @@ class AppConfig:
     ACTIVE_MLB_DAYS_THRESHOLD = int(os.getenv("ACTIVE_MLB_DAYS_THRESHOLD", "30"))
 
     # Testing Configuration
-    TEST_MLB_COUNT = int(os.getenv("TEST_MLB_COUNT", "10"))
+    TEST_MLB_COUNT = int(os.getenv("TEST_MLB_COUNT", "5"))
 
     # Model Features
     MODEL_FEATURES = ["day_of_week", "day_of_month", "rolling_mean_3", "lag_1", "price"]
