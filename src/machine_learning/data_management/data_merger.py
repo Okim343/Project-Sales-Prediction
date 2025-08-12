@@ -148,19 +148,45 @@ def get_date_range_info(data: pd.DataFrame) -> dict:
         Dictionary with date range information
     """
     try:
-        if data.empty or "date_created" not in data.columns:
-            return {
-                "min_date": None,
-                "max_date": None,
-                "date_span_days": 0,
-                "record_count": len(data),
-            }
+        # Check for date column in both processed and raw data formats
+        date_column = None
+        if "date" in data.columns:
+            date_column = "date"
+        elif "date_created" in data.columns:
+            date_column = "date_created"
 
-        # Convert to datetime if not already
-        data["date_created"] = pd.to_datetime(data["date_created"])
+        if data.empty or date_column is None:
+            # Check if date information is in the DataFrame index
+            if isinstance(data.index, pd.DatetimeIndex) and not data.empty:
+                min_date = data.index.min()
+                max_date = data.index.max()
+                date_span = (max_date - min_date).days
 
-        min_date = data["date_created"].min()
-        max_date = data["date_created"].max()
+                return {
+                    "min_date": min_date.strftime("%Y-%m-%d"),
+                    "max_date": max_date.strftime("%Y-%m-%d"),
+                    "date_span_days": date_span,
+                    "record_count": len(data),
+                }
+            else:
+                return {
+                    "min_date": None,
+                    "max_date": None,
+                    "date_span_days": 0,
+                    "record_count": len(data),
+                }
+
+        # Convert to datetime and handle timezone properly
+        date_col = pd.to_datetime(data[date_column])
+        if date_col.dt.tz is not None:
+            # If timezone-aware, convert to UTC then remove timezone
+            data[date_column] = date_col.dt.tz_convert("UTC").dt.tz_localize(None)
+        else:
+            # If timezone-naive, keep as is
+            data[date_column] = date_col
+
+        min_date = data[date_column].min()
+        max_date = data[date_column].max()
         date_span = (max_date - min_date).days
 
         return {
