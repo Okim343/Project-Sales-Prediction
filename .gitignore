@@ -16,6 +16,7 @@ env/
 .ruff_cache/
 data/
 src/machine_learning/archive
+xgboost-guide-python/
 
 # latex
 *.aux
