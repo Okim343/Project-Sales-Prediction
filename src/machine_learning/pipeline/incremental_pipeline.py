@@ -5,6 +5,7 @@ to update models with new data without full retraining.
 """
 
 import logging
+import numpy as np
 import pandas as pd
 import sys
 import time
@@ -37,6 +38,107 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+
+def generate_forecasts_for_existing_models(
+    updated_models: dict, feature_data: pd.DataFrame, forecast_days: int
+) -> tuple[dict, dict]:
+    """
+    Generate forecasts only for MLBs that have existing/updated models.
+    This avoids iterating through the entire dataset when we only want to forecast
+    for specific MLBs we have models for.
+
+    Args:
+        updated_models: Dictionary of MLB -> trained model
+        feature_data: Full dataset with all MLBs
+        forecast_days: Number of days to forecast
+
+    Returns:
+        tuple[dict, dict]: (mlb_forecasts, mlb_models) same format as other forecast functions
+    """
+    logger = logging.getLogger(__name__)
+    mlb_forecasts = {}
+    mlb_models = {}
+
+    logger.info(
+        f"Generating targeted forecasts for {len(updated_models)} specific MLBs"
+    )
+
+    for mlb, model in updated_models.items():
+        try:
+            # Get data for this specific MLB
+            mlb_data = feature_data[feature_data["mlb"] == mlb]
+            if len(mlb_data) == 0:
+                logger.warning(f"No data found for MLB {mlb}, skipping forecast")
+                continue
+
+            # Get the SKU for this MLB
+            sku = mlb_data["sku"].iloc[0] if "sku" in mlb_data.columns else None
+
+            # Generate forecast dates
+            today = pd.Timestamp.now().normalize()
+            future_start = today + pd.Timedelta(days=1)
+            future_dates = pd.date_range(
+                start=future_start, periods=forecast_days, freq="D"
+            )
+
+            # For MultiOutputRegressor models, use them directly
+            if hasattr(model, "estimators_"):
+                # Use the last row of features for prediction
+                FEATURES = ["day_of_week", "day_of_month", "rolling_mean_3", "lag_1"]
+                if not all(feature in mlb_data.columns for feature in FEATURES):
+                    logger.warning(f"Missing required features for MLB {mlb}, skipping")
+                    continue
+
+                last_features = mlb_data.iloc[-1][FEATURES].values.reshape(1, -1)
+                predictions = model.predict(last_features)[
+                    0
+                ]  # MultiOutput returns array of arrays
+            else:
+                # For regular models, also use direct prediction
+                FEATURES = ["day_of_week", "day_of_month", "rolling_mean_3", "lag_1"]
+                if not all(feature in mlb_data.columns for feature in FEATURES):
+                    logger.warning(f"Missing required features for MLB {mlb}, skipping")
+                    continue
+
+                last_features = mlb_data.iloc[-1][FEATURES].values.reshape(1, -1)
+                predictions = model.predict(last_features)
+                if len(predictions.shape) == 1:
+                    predictions = predictions.reshape(1, -1)[0]
+
+            # Ensure we have the right number of predictions
+            if len(predictions) != forecast_days:
+                logger.warning(
+                    f"Model for MLB {mlb} returned {len(predictions)} predictions, expected {forecast_days}"
+                )
+                # Pad or truncate as needed
+                if len(predictions) < forecast_days:
+                    # Repeat last prediction
+                    last_pred = predictions[-1] if len(predictions) > 0 else 0
+                    predictions = list(predictions) + [last_pred] * (
+                        forecast_days - len(predictions)
+                    )
+                else:
+                    predictions = predictions[:forecast_days]
+
+            # Round predictions to nearest integers (products sold in whole units)
+            predictions = np.round(predictions).astype(int)
+
+            # Create forecast DataFrame
+            forecast_df = pd.DataFrame({"prediction": predictions}, index=future_dates)
+
+            # Store forecast and model
+            mlb_forecasts[mlb] = (forecast_df, sku)
+            mlb_models[mlb] = model
+
+            logger.debug(f"Generated forecast for MLB {mlb} (SKU {sku})")
+
+        except Exception as e:
+            logger.error(f"Failed to generate forecast for MLB {mlb}: {e}")
+            continue
+
+    logger.info(f"Successfully generated forecasts for {len(mlb_forecasts)} MLBs")
+    return mlb_forecasts, mlb_models
 
 
 def main():
@@ -132,20 +234,14 @@ def main():
                 models_updated = len(updated_models)
                 logger.info(f"Incremental update completed for {models_updated} models")
 
-                # Generate forecasts using updated models
+                # Generate forecasts using targeted approach for updated models only
                 logger.info(
-                    f"Generating {AppConfig.FORECAST_DAYS_LONG}-day forecasts with updated models..."
+                    f"Generating {AppConfig.FORECAST_DAYS_LONG}-day forecasts for {len(updated_models)} updated models..."
                 )
-                mlb_forecast, mlb_models = forecast_future_sales_direct(
-                    feature_data, AppConfig.FORECAST_DAYS_LONG
+                mlb_forecast, mlb_models = generate_forecasts_for_existing_models(
+                    updated_models, feature_data, AppConfig.FORECAST_DAYS_LONG
                 )
-                logger.info("Forecasting with updated models complete!")
-
-                # Replace the forecast models with our incrementally updated models
-                # (forecast_future_sales_direct trains new models, but we want to use our updated ones)
-                for mlb in updated_models:
-                    if mlb in mlb_models:  # Only replace if the MLB was also forecasted
-                        mlb_models[mlb] = updated_models[mlb]
+                logger.info("Targeted forecasting with updated models complete!")
 
                 logger.info("Successfully completed incremental training pipeline")
 
@@ -360,6 +456,9 @@ def main_with_date_filter(since_date: str):
                 future_dates = pd.date_range(
                     start=future_start, periods=AppConfig.FORECAST_DAYS_LONG, freq="D"
                 )
+
+                # Round predictions to nearest integers (products sold in whole units)
+                predictions = np.round(predictions).astype(int)
 
                 forecast_df = pd.DataFrame(
                     {"prediction": predictions}, index=future_dates
