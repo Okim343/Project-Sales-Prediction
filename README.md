@@ -1,13 +1,10 @@
-# README.md
+# Sales Forecasting for Mercado Livre
 
 ## Project Overview
 
-This is a sales forecasting application designed for Mercado Livre users. The project
-implements machine learning models (XGBoost) to predict sales for different MLBs
-(Mercado Livre identifiers) using time series data, with Multi Step Direct Forecasting
-methodology. Each MLB serves as the unique identifier for forecasting, while SKU
-information is preserved for reference. Multiple SKUs can share the same MLB, but each
-MLB maps to exactly one SKU.
+Sales forecasting application for Mercado Livre using XGBoost models with Multi Step
+Direct Forecasting methodology. Models predict 90-day sales forecasts for MLBs (Mercado
+Livre identifiers) with continuous learning capabilities.
 
 ## Environment Setup
 
@@ -19,218 +16,112 @@ conda activate fcast_project
 pre-commit install
 ```
 
-## Script Overview
+## Main Scripts
 
-The project has three main execution scripts, each serving different purposes:
+### 1. `script_final.py` - Production Pipeline
 
-### 1. `script_final.py` - Production Forecasting Pipeline
+Automated production forecasting that generates 90-day forecasts and saves to database.
 
-**Purpose**: Automated production script for generating forecasts and saving to
-database.
+- Imports fresh data from PostgreSQL
+- Processes data and creates time series features
+- Generates forecasts for all MLBs
+- Saves to `public.mlb_forecasts_90_days` table
 
-**What it does**:
+**Run**: `python src/machine_learning/script_final.py`
 
-- Imports fresh data from PostgreSQL database (using direct import for data
-  completeness)
-- Validates data freshness to ensure recent data is available
-- Processes and cleans the sales data with improved timezone handling
-- Creates time series features
-- Generates 90-day forecasts for all MLBs using normal rounding (to nearest integer)
-- Saves forecasts directly to the database (`public.mlb_forecasts_90_days` table) with
-  both MLB and SKU information
-- No user interaction required
+### 2. `script_webapp.py` - Web Dashboard
 
-**When to use**: For automated/production runs, scheduled forecasting, or when you want
-to update the database with fresh forecasts.
+Web interface for viewing forecasts at http://127.0.0.1:8050
 
-**Run with**: `python src/machine_learning/script_final.py`
+- Interactive forecast charts and data tables
+- Filter by MLB, SKU, and date range
 
-### 2. `script_main.py` - Interactive Model Training & Predictions
+**Run**: `python src/web_app/script_webapp.py`
 
-**Purpose**: Interactive script for training models and visualizing individual MLB
-predictions.
+### 3. Pipeline Scripts
 
-**What it does**:
+- `pipeline/daily_update.py` - Incremental model updates with new data
+- `pipeline/incremental_pipeline.py` - Full incremental learning pipeline
 
-- Loads data (cached or fresh from database)
-- Processes data and creates features
-- Trains XGBoost models for each MLB (or loads existing models)
-- Generates sample time series plots
-- Allows interactive MLB selection for prediction visualization (displays SKU for
-  reference)
-- Saves prediction plots as PNG files
+**Run**: `python src/machine_learning/pipeline/daily_update.py`
 
-**When to use**: For model development, training new models, or analyzing individual MLB
-predictions.
+## Configuration
 
-**Run with**: `python src/machine_learning/script_main.py`
-
-### 3. `script_main_forecast.py` - Interactive Forecasting
-
-**Purpose**: Interactive script for generating and visualizing forecasts with user
-input.
-
-**What it does**:
-
-- Loads data (cached or fresh from database)
-- Processes data and creates features
-- Generates 30-day forecasts for all MLBs (or loads existing forecasts)
-- Allows interactive MLB selection for forecast visualization (displays SKU for
-  reference)
-- Saves forecast plots as HTML files
-- Saves forecasts to database
-
-**When to use**: For interactive forecasting sessions, exploring forecasts for specific
-MLBs, or generating forecast visualizations.
-
-**Run with**: `python src/machine_learning/script_main_forecast.py`
-
-### 4. `script_webapp.py` - Web Dashboard
-
-**Purpose**: Web-based dashboard for viewing forecasts.
-
-**What it does**:
-
-- Launches a web interface at http://127.0.0.1:8050
-- Displays interactive forecast charts and data tables
-- Includes data caching for performance
-- Allows filtering by MLB and SKU with date range
-
-**Run with**: `python src/web_app/script_webapp.py`
-
-## Configuration & Customization
-
-### Changing Forecast Duration
-
-**Method 1: Environment Variables (Recommended)** Set these before running scripts:
+### Environment Variables
 
 ```bash
-export FORECAST_DAYS=60        # For script_main_forecast.py (default: 30)
-export FORECAST_DAYS_LONG=120  # For script_final.py (default: 90)
-```
-
-**Method 2: Edit Configuration File** Modify `src/machine_learning/config.py`:
-
-```python
-class AppConfig:
-    FORECAST_DAYS = 45  # Change from 30 to desired days
-    FORECAST_DAYS_LONG = 120  # Change from 90 to desired days
-```
-
-### Other Configuration Options
-
-**Database Settings**:
-
-```bash
+export FORECAST_DAYS_LONG=120  # Change forecast duration (default: 90)
 export DB_HOST=your_host
 export DB_PASSWORD=your_password
 export DB_USER=your_username
 export DB_NAME=your_database
 ```
 
-**Model Parameters**: Edit `src/machine_learning/estimation/model.py`:
+### Configuration Files
 
-```python
-XGBOOST_PARAMS = {
-    "n_estimators": 1000,  # Number of trees
-    "max_depth": 3,  # Tree depth
-    "learning_rate": 0.01,  # Learning rate
-    # ... other parameters
-}
-```
-
-**Script Behavior**:
-
-- `script_final.py`: Always imports fresh data from database (no caching)
-- `script_main.py` and `script_main_forecast.py`: Edit the boolean flags in each script:
-
-```python
-# In script_main.py and script_main_forecast.py
-import_data = True  # Set to True to fetch fresh data (recommended)
-import_regressor = True  # Set to False to train new models
-```
+- `src/machine_learning/config.py` - Main app configuration
+- `src/machine_learning/estimation/model.py` - XGBoost parameters
 
 ## Data Flow
 
-1. **Data Import**: Raw sales data from PostgreSQL (`public.view_enrico`) - requires
-   `mlb` column
-1. **Data Processing**: Cleaning and time series feature creation, grouped by MLB
-1. **Model Training**: XGBoost regressors trained per MLB (with SKU preserved for
-   reference)
-1. **Forecasting**: Multi-step direct forecasting using MLB as unique identifier
-1. **Storage**: Results saved to database and local files with both MLB and SKU
-   information
-1. **Visualization**: Web dashboard and plot generation
+1. **Data Import**: PostgreSQL (`public.view_enrico`) → Raw sales data
+1. **Processing**: Data cleaning → Time series features → MLB-grouped data
+1. **Training**: XGBoost models per MLB with continuous learning
+1. **Forecasting**: Multi-step direct 90-day forecasts
+1. **Storage**: Database (`public.mlb_forecasts_90_days`) + local files
+1. **Visualization**: Web dashboard with interactive charts
 
-## Key File Locations
+## Key Files
 
-- **Configuration**: `src/machine_learning/config.py` - Main configuration
+- **Config**: `src/machine_learning/config.py`
 - **Models**: `src/machine_learning/bld/mlb_regressors.pkl`
-- **Forecasts**: `src/machine_learning/bld/mlb_forecast.pkl`
 - **Data**: `src/machine_learning/data/raw_sql.csv`
-- **Plots**: `src/machine_learning/bld/*.html` and `*.png`
+- **Pipeline**: `src/machine_learning/pipeline/`
 
-## Database Configuration
+## Database
 
 - **Host**: 172.27.40.210:5432
 - **Database**: "Mercado Livre"
-- **Input View**: `public.view_enrico`
-- **Output Table**: `public.mlb_forecasts_90_days` (contains both MLB and SKU columns)
+- **Input**: `public.view_enrico`
+- **Output**: `public.mlb_forecasts_90_days`
 
-## Quick Start Guide
+## Quick Start
 
-1. **Setup Environment**:
+1. **Setup**:
 
    ```bash
    mamba env create -f environment.yml
    conda activate fcast_project
-   ```
-
-1. **Set Database Password** (if needed):
-
-   ```bash
    export DB_PASSWORD=your_password
    ```
 
-1. **Run Scripts**:
+1. **Run**:
 
-   - **For production forecasting**: `python src/machine_learning/script_final.py`
-   - **For model training**: `python src/machine_learning/script_main.py`
-   - **For interactive forecasting**:
-     `python src/machine_learning/script_main_forecast.py`
-   - **For web dashboard**: `python src/web_app/script_webapp.py`
+   ```bash
+   # Production forecasting
+   python src/machine_learning/script_final.py
 
-## MLB vs SKU Architecture
+   # Web dashboard
+   python src/web_app/script_webapp.py
 
-**Important**: This system has been redesigned to use MLB (Mercado Livre identifiers) as
-the primary forecasting unit:
+   # Daily updates
+   python src/machine_learning/pipeline/daily_update.py
+   ```
 
-- **MLB as Primary ID**: All forecasting, model training, and processing uses MLB as the
-  unique identifier
-- **SKU Preservation**: SKU information is maintained throughout the pipeline for
-  reference and display
-- **Relationship**: Many SKUs can share the same MLB code, but each MLB maps to exactly
-  one SKU
-- **Database Requirements**: The input view (`public.view_enrico`) **must include an
-  `mlb` column**
-- **Output Structure**: Forecasts are saved with both MLB and SKU columns for complete
-  traceability
+## Architecture
 
-## Development Notes
+**MLB-Centric Design**: Uses MLB (Mercado Livre identifiers) as primary forecasting
+unit.
 
-- Models are trained per MLB individually using XGBoost (SKU preserved for reference)
-- The system supports both model training and loading pre-trained models
-- All scripts include comprehensive error handling and logging
-- The web application includes data caching for improved performance
-- Forecasts are generated using Multi Step Direct Forecasting methodology
-- **Data Import**: Uses direct database import (no chunking) to ensure all recent data
-  is captured
-- **Timezone Handling**: Properly converts timezone-aware dates to avoid data processing
-  issues
-- **Prediction Rounding**: Uses normal rounding (5.4→5, 5.6→6) instead of ceiling for
-  more accurate forecasts
-- **Data Freshness**: Validates data recency to prevent forecasting with stale MLB data
-- **MLB-Based Processing**: All data processing, feature creation, and aggregation is
-  done by MLB
-- **Interactive Scripts**: When prompted for input, enter MLB codes (SKU will be
-  displayed for reference)
+- **Training**: XGBoost models per MLB
+- **Forecasting**: 90-day Multi Step Direct methodology
+- **Continuous Learning**: Incremental model updates with validation
+- **Data Pipeline**: Metadata tracking with automated rollback capabilities
+
+## Features
+
+- **Continuous Learning**: Daily incremental model updates with performance validation
+- **Robust Pipeline**: Metadata tracking, automated backups, and rollback mechanisms
+- **Production Ready**: Comprehensive error handling and logging
+- **Web Interface**: Interactive dashboard with real-time data visualization
+- **Scalable Architecture**: Batch processing with memory management
