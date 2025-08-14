@@ -34,6 +34,15 @@ from estimation.model_forecast import (
     forecast_future_sales_direct_limited,
 )
 from estimation.model_storage import save_models, load_models, archive_models
+from validation.forecast_validator import (
+    validate_forecasts,
+    calculate_historical_stats,
+    validate_forecast_trends,
+)
+from validation.model_validator import (
+    validate_model_consistency,
+    monitor_memory_usage_during_validation,
+)
 
 # Configure plotting backend
 pd.options.plotting.backend = "matplotlib"
@@ -399,6 +408,10 @@ def main():
         clean_data = process_sales_data(new_data)
         feature_data = create_time_series_features(clean_data)
 
+        # Calculate historical stats for forecast validation
+        logger.info("Calculating historical statistics for validation...")
+        historical_stats = calculate_historical_stats(feature_data)
+
         # Get date range info for logging
         date_info = get_date_range_info(feature_data)
         if date_info["min_date"] and date_info["max_date"]:
@@ -461,10 +474,80 @@ def main():
         logger.info(f"MLBs failed: {rollback_stats['mlbs_failed']}")
         logger.info(f"Final models saved: {models_updated}")
 
-        # Step 6: Save forecasts to TEST SQL database table
+        # Step 5.5: Additional model validation and consistency checks
+        if updated_models:
+            logger.info("Step 5.5: Performing additional model validation...")
+            try:
+                is_consistent, consistency_issues = validate_model_consistency(
+                    updated_models
+                )
+                if not is_consistent or consistency_issues:
+                    logger.warning(
+                        f"Model consistency check found {len(consistency_issues)} issues:"
+                    )
+                    for issue in consistency_issues[:5]:  # Log first 5 issues
+                        logger.warning(f"  - {issue}")
+                else:
+                    logger.info("All test models passed consistency validation")
+
+                # Monitor memory usage during validation
+                memory_stats = monitor_memory_usage_during_validation()
+                logger.info(
+                    f"Memory usage during validation: {memory_stats['rss_mb']:.1f} MB RSS, "
+                    f"{memory_stats['percent']:.1f}% of system memory"
+                )
+
+            except Exception as e:
+                logger.error(f"Additional model validation failed: {e}")
+                logger.warning(
+                    "Continuing with models that passed initial validation..."
+                )
+
+        # Step 6: Validate forecasts before saving
+        if final_forecasts:
+            logger.info(f"Step 6: Validating {len(final_forecasts)} test forecasts...")
+            try:
+                validated_forecasts, validation_issues = validate_forecasts(
+                    final_forecasts, historical_stats
+                )
+
+                # Log validation results
+                if validation_issues:
+                    logger.warning(
+                        f"Forecast validation found {len(validation_issues)} issues:"
+                    )
+                    for issue in validation_issues[:10]:  # Log first 10 issues
+                        logger.warning(f"  - {issue}")
+                    if len(validation_issues) > 10:
+                        logger.warning(
+                            f"  ... and {len(validation_issues) - 10} more issues"
+                        )
+
+                # Optional: Check forecast trends for additional warnings
+                trend_warnings = validate_forecast_trends(
+                    validated_forecasts, historical_stats
+                )
+                if trend_warnings:
+                    logger.info(
+                        f"Forecast trend analysis found {len(trend_warnings)} warnings:"
+                    )
+                    for warning in trend_warnings[:5]:  # Log first 5 warnings
+                        logger.info(f"  - {warning}")
+
+                # Use validated forecasts for saving
+                final_forecasts = validated_forecasts
+                logger.info(
+                    f"Forecast validation completed: {len(final_forecasts)} forecasts validated"
+                )
+
+            except Exception as e:
+                logger.error(f"Forecast validation failed: {e}")
+                logger.warning("Proceeding with unvalidated forecasts...")
+
+        # Step 6.5: Save forecasts to TEST SQL database table
         if final_forecasts:
             logger.info(
-                f"Step 6: Saving {len(final_forecasts)} test forecasts to SQL database ({DatabaseConfig.TEST_FORECAST_TABLE})..."
+                f"Step 6.5: Saving {len(final_forecasts)} validated test forecasts to SQL database ({DatabaseConfig.TEST_FORECAST_TABLE})..."
             )
             try:
                 db_manager.save_forecasts_to_sql(
@@ -476,7 +559,7 @@ def main():
                 # Don't fail the entire pipeline for forecast saving issues
         else:
             logger.info(
-                "No test forecasts to save (no models were updated successfully)"
+                "No test forecasts to save (no models were updated successfully or all failed validation)"
             )
 
         # Step 7: Save updated test models (only models that improved or maintained performance)
@@ -713,6 +796,10 @@ def main_with_specific_date(since_date: str):
         clean_data = process_sales_data(new_data)
         feature_data = create_time_series_features(clean_data)
 
+        # Calculate historical stats for forecast validation
+        logger.info("Calculating historical statistics for validation...")
+        historical_stats = calculate_historical_stats(feature_data)
+
         # Get date range info for logging
         date_info = get_date_range_info(feature_data)
         if date_info["min_date"] and date_info["max_date"]:
@@ -775,10 +862,80 @@ def main_with_specific_date(since_date: str):
         logger.info(f"MLBs failed: {rollback_stats['mlbs_failed']}")
         logger.info(f"Final models saved: {models_updated}")
 
-        # Step 6: Save forecasts to TEST SQL database table
+        # Step 5.5: Additional model validation and consistency checks
+        if updated_models:
+            logger.info("Step 5.5: Performing additional model validation...")
+            try:
+                is_consistent, consistency_issues = validate_model_consistency(
+                    updated_models
+                )
+                if not is_consistent or consistency_issues:
+                    logger.warning(
+                        f"Model consistency check found {len(consistency_issues)} issues:"
+                    )
+                    for issue in consistency_issues[:5]:  # Log first 5 issues
+                        logger.warning(f"  - {issue}")
+                else:
+                    logger.info("All test models passed consistency validation")
+
+                # Monitor memory usage during validation
+                memory_stats = monitor_memory_usage_during_validation()
+                logger.info(
+                    f"Memory usage during validation: {memory_stats['rss_mb']:.1f} MB RSS, "
+                    f"{memory_stats['percent']:.1f}% of system memory"
+                )
+
+            except Exception as e:
+                logger.error(f"Additional model validation failed: {e}")
+                logger.warning(
+                    "Continuing with models that passed initial validation..."
+                )
+
+        # Step 6: Validate forecasts before saving
+        if final_forecasts:
+            logger.info(f"Step 6: Validating {len(final_forecasts)} test forecasts...")
+            try:
+                validated_forecasts, validation_issues = validate_forecasts(
+                    final_forecasts, historical_stats
+                )
+
+                # Log validation results
+                if validation_issues:
+                    logger.warning(
+                        f"Forecast validation found {len(validation_issues)} issues:"
+                    )
+                    for issue in validation_issues[:10]:  # Log first 10 issues
+                        logger.warning(f"  - {issue}")
+                    if len(validation_issues) > 10:
+                        logger.warning(
+                            f"  ... and {len(validation_issues) - 10} more issues"
+                        )
+
+                # Optional: Check forecast trends for additional warnings
+                trend_warnings = validate_forecast_trends(
+                    validated_forecasts, historical_stats
+                )
+                if trend_warnings:
+                    logger.info(
+                        f"Forecast trend analysis found {len(trend_warnings)} warnings:"
+                    )
+                    for warning in trend_warnings[:5]:  # Log first 5 warnings
+                        logger.info(f"  - {warning}")
+
+                # Use validated forecasts for saving
+                final_forecasts = validated_forecasts
+                logger.info(
+                    f"Forecast validation completed: {len(final_forecasts)} forecasts validated"
+                )
+
+            except Exception as e:
+                logger.error(f"Forecast validation failed: {e}")
+                logger.warning("Proceeding with unvalidated forecasts...")
+
+        # Step 6.5: Save forecasts to TEST SQL database table
         if final_forecasts:
             logger.info(
-                f"Step 6: Saving {len(final_forecasts)} test forecasts to SQL database ({DatabaseConfig.TEST_FORECAST_TABLE})..."
+                f"Step 6.5: Saving {len(final_forecasts)} validated test forecasts to SQL database ({DatabaseConfig.TEST_FORECAST_TABLE})..."
             )
             try:
                 db_manager.save_forecasts_to_sql(
@@ -790,7 +947,7 @@ def main_with_specific_date(since_date: str):
                 # Don't fail the entire pipeline for forecast saving issues
         else:
             logger.info(
-                "No test forecasts to save (no models were updated successfully)"
+                "No test forecasts to save (no models were updated successfully or all failed validation)"
             )
 
         # Step 7: Save updated test models (only models that improved or maintained performance)
