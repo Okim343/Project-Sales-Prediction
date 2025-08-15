@@ -216,7 +216,14 @@ def forecast_future_sales_direct_limited(
             f"Processing data from {all_dates.min().date()} to {global_max.date()} ({days_old} days old)"
         )
 
-    for mlb in data["mlb"].unique():
+    # Select top MLBs by data volume for better model quality and testing reliability
+    mlb_data_counts = data.groupby("mlb").size().sort_values(ascending=False)
+    selected_mlbs = mlb_data_counts.head(
+        max_mlbs * 3
+    ).index  # Get more candidates in case some are filtered out
+    logger.info(f"Selected top {len(selected_mlbs)} MLBs by data volume for processing")
+
+    for mlb in selected_mlbs:
         # Stop if we've reached the maximum number of successful forecasts
         if processed >= max_mlbs:
             logger.info(

@@ -125,3 +125,10 @@ unit.
 - **Production Ready**: Comprehensive error handling and logging
 - **Web Interface**: Interactive dashboard with real-time data visualization
 - **Scalable Architecture**: Batch processing with memory management
+
+## Future Fixes
+
+- **Optimize learning time**: Threading in python and other methods
+- **Fix model saving strategy to be able to better read it**: Find a way of saving that
+  allows massive models to be read easily
+- **Remove useless scripts for final project**: Such as script_final.py or others
