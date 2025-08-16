@@ -370,34 +370,12 @@ def validate_final_results(
             logger.error(error_msg)
             issues_list.append(error_msg)
 
-    # Step 2: Batch forecast validation (for any remaining forecasts)
-    validated_forecasts = final_forecasts
-    if final_forecasts:
-        try:
-            # Use batch validation as a final check
-            batch_validated, validation_issues = validate_forecasts(
-                final_forecasts, context.historical_stats
-            )
+    # Step 2: Forecasts already validated individually during processing
+    # No need for duplicate batch validation since each forecast was validated
+    # in _validate_single_forecast during validate_and_update_mlb_model
+    logger.info(f"Using {len(final_forecasts)} individually validated forecasts")
 
-            if validation_issues:
-                logger.info(
-                    f"Final forecast validation found {len(validation_issues)} additional issues:"
-                )
-                for issue in validation_issues[:5]:  # Log first 5 issues
-                    logger.info(f"  - {issue}")
-                    issues_list.extend(validation_issues)
-
-            validated_forecasts = batch_validated
-            logger.info(
-                f"Final forecast validation: {len(validated_forecasts)}/{len(final_forecasts)} forecasts validated"
-            )
-
-        except Exception as e:
-            error_msg = f"Final forecast validation failed: {e}"
-            logger.error(error_msg)
-            issues_list.append(error_msg)
-
-    return updated_models, validated_forecasts, issues_list
+    return updated_models, final_forecasts, issues_list
 
 
 # Helper functions
