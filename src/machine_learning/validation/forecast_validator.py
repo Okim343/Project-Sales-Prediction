@@ -269,3 +269,326 @@ def validate_forecast_trends(
     except Exception as e:
         logger.error(f"Failed to validate forecast trends: {e}")
         return [f"Trend validation failed: {e}"]
+
+
+def validate_single_forecast(
+    mlb: str,
+    forecast_df: pd.DataFrame,
+    sku: str,
+    historical_stats: Dict[str, Dict],
+    fix_issues: bool = True,
+) -> Tuple[bool, Tuple, List[str]]:
+    """
+    Validate a single forecast for integrated validation flow.
+
+    Args:
+        mlb: MLB code
+        forecast_df: Forecast DataFrame with 'prediction' column
+        sku: SKU associated with the MLB
+        historical_stats: Historical statistics for this MLB
+        fix_issues: Whether to automatically fix correctable issues
+
+    Returns:
+        Tuple of (is_valid, forecast_tuple, issues_list)
+        where forecast_tuple is (corrected_forecast_df, sku) if valid
+    """
+    logger = logging.getLogger(__name__)
+    issues = []
+    corrected_df = forecast_df.copy()
+
+    try:
+        # Use the existing batch validator for a single forecast
+        single_forecast_dict = {mlb: (forecast_df, sku)}
+        validated_dict, validation_issues = validate_forecasts(
+            single_forecast_dict, historical_stats
+        )
+
+        # Check if forecast passed validation
+        if mlb in validated_dict:
+            corrected_forecast_df, corrected_sku = validated_dict[mlb]
+            if validation_issues:
+                issues.extend(validation_issues)
+                if fix_issues:
+                    logger.debug(
+                        f"MLB {mlb}: Forecast had {len(validation_issues)} issues but was corrected"
+                    )
+                    return True, (corrected_forecast_df, corrected_sku), issues
+                else:
+                    logger.warning(
+                        f"MLB {mlb}: Forecast has {len(validation_issues)} issues"
+                    )
+                    return False, (corrected_forecast_df, corrected_sku), issues
+            else:
+                logger.debug(f"MLB {mlb}: Forecast passed validation without issues")
+                return True, (corrected_forecast_df, corrected_sku), issues
+        else:
+            # Forecast was rejected by validation
+            rejection_reason = "Forecast failed validation and was rejected"
+            if validation_issues:
+                rejection_reason += f": {validation_issues[0]}"  # Include first issue
+            issues.append(rejection_reason)
+            logger.warning(f"MLB {mlb}: {rejection_reason}")
+            return False, (corrected_df, sku), issues
+
+    except Exception as e:
+        error_msg = f"Single forecast validation failed: {e}"
+        logger.error(f"MLB {mlb}: {error_msg}")
+        issues.append(error_msg)
+        return False, (corrected_df, sku), issues
+
+
+def quick_forecast_sanity_check(
+    mlb: str, forecast_df: pd.DataFrame, historical_stats: Dict[str, Dict]
+) -> Tuple[bool, List[str]]:
+    """
+    Quick sanity check for a forecast to catch obvious issues early.
+
+    Args:
+        mlb: MLB code
+        forecast_df: Forecast DataFrame
+        historical_stats: Historical statistics
+
+    Returns:
+        Tuple of (passed_check, issues_list)
+    """
+    logger = logging.getLogger(__name__)
+    issues = []
+
+    try:
+        predictions = forecast_df["prediction"].values
+
+        # Check 1: No negative values
+        if (predictions < 0).any():
+            issues.append(f"Contains {(predictions < 0).sum()} negative predictions")
+
+        # Check 2: No NaN or infinite values
+        if np.isnan(predictions).any():
+            issues.append(f"Contains {np.isnan(predictions).sum()} NaN values")
+
+        if np.isinf(predictions).any():
+            issues.append(f"Contains {np.isinf(predictions).sum()} infinite values")
+
+        # Check 3: Reasonable range check using historical stats
+        if mlb in historical_stats and "avg_sales" in historical_stats[mlb]:
+            hist_avg = historical_stats[mlb]["avg_sales"]
+            max_reasonable = hist_avg * 10  # 10x historical average threshold
+
+            if (predictions > max_reasonable).any():
+                spike_count = (predictions > max_reasonable).sum()
+                max_pred = predictions.max()
+                issues.append(
+                    f"{spike_count} predictions exceed 10x historical average "
+                    f"(max: {max_pred:.1f}, threshold: {max_reasonable:.1f})"
+                )
+
+        # Check 4: Data types
+        if not np.issubdtype(predictions.dtype, np.number):
+            issues.append(f"Non-numeric predictions detected: {predictions.dtype}")
+
+        # Check 5: Expected length (assuming 90-day forecasts)
+        expected_length = 90
+        if len(predictions) != expected_length:
+            issues.append(
+                f"Unexpected forecast length: {len(predictions)} (expected {expected_length})"
+            )
+
+        passed = len(issues) == 0
+        if not passed:
+            logger.debug(f"MLB {mlb}: Quick sanity check found {len(issues)} issues")
+
+        return passed, issues
+
+    except Exception as e:
+        error_msg = f"Quick sanity check failed: {e}"
+        logger.error(f"MLB {mlb}: {error_msg}")
+        return False, [error_msg]
+
+
+def validate_forecast_quality_inline(
+    mlb: str,
+    forecast_df: pd.DataFrame,
+    historical_stats: Dict[str, Dict],
+    quality_threshold: float = 0.5,
+) -> Tuple[bool, Dict]:
+    """
+    Validate forecast quality against historical patterns for integrated validation.
+
+    Args:
+        mlb: MLB code
+        forecast_df: Forecast DataFrame
+        historical_stats: Historical statistics
+        quality_threshold: Minimum quality score (0-1) to pass
+
+    Returns:
+        Tuple of (passed_quality_check, quality_metrics)
+    """
+    logger = logging.getLogger(__name__)
+
+    try:
+        predictions = forecast_df["prediction"].values
+
+        # Initialize quality metrics
+        quality_metrics = {
+            "mean_prediction": float(np.mean(predictions)),
+            "std_prediction": float(np.std(predictions)),
+            "quality_score": 0.0,
+            "passed_threshold": False,
+            "issues": [],
+        }
+
+        if mlb not in historical_stats:
+            quality_metrics["issues"].append(
+                "No historical stats available for quality assessment"
+            )
+            quality_metrics["quality_score"] = (
+                quality_threshold  # Give benefit of doubt
+            )
+            quality_metrics["passed_threshold"] = True
+            return True, quality_metrics
+
+        hist_stats = historical_stats[mlb]
+        hist_avg = hist_stats.get("avg_sales", 0)
+        hist_std = hist_stats.get("std_sales", 0)
+
+        # Quality metric 1: Mean similarity (30% weight)
+        if hist_avg > 0:
+            mean_similarity = 1 - min(
+                1, abs(quality_metrics["mean_prediction"] - hist_avg) / hist_avg
+            )
+        else:
+            mean_similarity = 0.5  # Neutral score if no historical average
+
+        # Quality metric 2: Variance reasonableness (30% weight)
+        if hist_std > 0:
+            variance_ratio = quality_metrics["std_prediction"] / hist_std
+            # Penalize if variance is too different (ideal range 0.5-2.0)
+            if 0.5 <= variance_ratio <= 2.0:
+                variance_score = 1.0
+            elif variance_ratio < 0.5:
+                variance_score = variance_ratio / 0.5  # Linear penalty below 0.5
+            else:  # variance_ratio > 2.0
+                variance_score = max(
+                    0, 1 - (variance_ratio - 2.0) / 3.0
+                )  # Linear penalty above 2.0
+        else:
+            variance_score = 0.5  # Neutral score
+
+        # Quality metric 3: No extreme outliers (40% weight)
+        outlier_threshold = max(hist_avg * 5, 10)  # 5x average or at least 10
+        outlier_count = (predictions > outlier_threshold).sum()
+        outlier_score = max(
+            0, 1 - (outlier_count / len(predictions))
+        )  # Penalty for outliers
+
+        # Calculate overall quality score
+        quality_score = (
+            mean_similarity * 0.3 + variance_score * 0.3 + outlier_score * 0.4
+        )
+        quality_metrics["quality_score"] = float(quality_score)
+        quality_metrics["passed_threshold"] = quality_score >= quality_threshold
+
+        # Add detailed metrics
+        quality_metrics.update(
+            {
+                "mean_similarity": float(mean_similarity),
+                "variance_score": float(variance_score),
+                "outlier_score": float(outlier_score),
+                "outlier_count": int(outlier_count),
+                "historical_avg": float(hist_avg),
+                "historical_std": float(hist_std),
+            }
+        )
+
+        # Log quality assessment
+        if quality_metrics["passed_threshold"]:
+            logger.debug(
+                f"MLB {mlb}: Forecast quality score {quality_score:.3f} (passed)"
+            )
+        else:
+            logger.warning(
+                f"MLB {mlb}: Forecast quality score {quality_score:.3f} (failed threshold {quality_threshold})"
+            )
+            quality_metrics["issues"].append(
+                f"Quality score {quality_score:.3f} below threshold {quality_threshold}"
+            )
+
+        return quality_metrics["passed_threshold"], quality_metrics
+
+    except Exception as e:
+        logger.error(f"MLB {mlb}: Forecast quality validation failed: {e}")
+        return False, {
+            "quality_score": 0.0,
+            "passed_threshold": False,
+            "error": str(e),
+            "issues": [f"Quality validation error: {e}"],
+        }
+
+
+def correct_forecast_issues(
+    mlb: str, forecast_df: pd.DataFrame, historical_stats: Dict[str, Dict]
+) -> pd.DataFrame:
+    """
+    Automatically correct common forecast issues for integrated validation.
+
+    Args:
+        mlb: MLB code
+        forecast_df: Original forecast DataFrame
+        historical_stats: Historical statistics for corrections
+
+    Returns:
+        Corrected forecast DataFrame
+    """
+    logger = logging.getLogger(__name__)
+    corrected_df = forecast_df.copy()
+
+    try:
+        predictions = corrected_df["prediction"].values
+
+        # Correction 1: Fix negative values
+        negative_count = (predictions < 0).sum()
+        if negative_count > 0:
+            corrected_df["prediction"] = corrected_df["prediction"].clip(lower=0)
+            logger.debug(f"MLB {mlb}: Corrected {negative_count} negative predictions")
+
+        # Correction 2: Fix NaN values
+        nan_count = corrected_df["prediction"].isna().sum()
+        if nan_count > 0:
+            replacement_value = historical_stats.get(mlb, {}).get("avg_sales", 0)
+            corrected_df["prediction"] = corrected_df["prediction"].fillna(
+                replacement_value
+            )
+            logger.debug(
+                f"MLB {mlb}: Corrected {nan_count} NaN predictions with {replacement_value}"
+            )
+
+        # Correction 3: Fix infinite values
+        inf_mask = np.isinf(corrected_df["prediction"])
+        inf_count = inf_mask.sum()
+        if inf_count > 0:
+            replacement_value = historical_stats.get(mlb, {}).get("avg_sales", 0)
+            corrected_df.loc[inf_mask, "prediction"] = replacement_value
+            logger.debug(
+                f"MLB {mlb}: Corrected {inf_count} infinite predictions with {replacement_value}"
+            )
+
+        # Correction 4: Cap extreme outliers
+        if mlb in historical_stats and "avg_sales" in historical_stats[mlb]:
+            hist_avg = historical_stats[mlb]["avg_sales"]
+            cap_threshold = max(hist_avg * 5, 10)  # 5x average or at least 10
+
+            outlier_mask = corrected_df["prediction"] > cap_threshold
+            outlier_count = outlier_mask.sum()
+            if outlier_count > 0:
+                corrected_df.loc[outlier_mask, "prediction"] = cap_threshold
+                logger.debug(
+                    f"MLB {mlb}: Capped {outlier_count} extreme outliers at {cap_threshold}"
+                )
+
+        # Correction 5: Ensure integer values for products
+        corrected_df["prediction"] = corrected_df["prediction"].round().astype(int)
+
+        return corrected_df
+
+    except Exception as e:
+        logger.error(f"MLB {mlb}: Failed to correct forecast issues: {e}")
+        return forecast_df  # Return original if correction fails

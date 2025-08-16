@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 def create_metadata_table() -> bool:
     """
     Create the pipeline metadata table if it doesn't exist.
+    Also handles migration of existing tables with smaller column sizes.
 
     Returns:
         True if table creation was successful or table already exists, False otherwise
@@ -25,7 +26,7 @@ def create_metadata_table() -> bool:
     CREATE TABLE IF NOT EXISTS pipeline_metadata (
         run_id SERIAL PRIMARY KEY,
         run_timestamp TIMESTAMP,
-        run_type VARCHAR(20),
+        run_type VARCHAR(30),
         status VARCHAR(20),
         records_processed INT,
         models_updated INT,
@@ -34,11 +35,31 @@ def create_metadata_table() -> bool:
     );
     """
 
+    # Migration query to handle existing tables with smaller run_type column
+    migration_query = """
+    DO $$
+    BEGIN
+        -- Check if run_type column exists and is too small
+        IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'pipeline_metadata'
+            AND column_name = 'run_type'
+            AND character_maximum_length < 30
+        ) THEN
+            -- Alter the column to increase size
+            ALTER TABLE pipeline_metadata ALTER COLUMN run_type TYPE VARCHAR(30);
+        END IF;
+    END $$;
+    """
+
     try:
         with db_manager.engine.connect() as conn:
+            # First create the table if it doesn't exist
             conn.execute(text(create_table_query))
+            # Then run migration to handle existing tables with smaller columns
+            conn.execute(text(migration_query))
             conn.commit()
-        logger.info("Pipeline metadata table created successfully or already exists")
+        logger.info("Pipeline metadata table created/migrated successfully")
         return True
     except SQLAlchemyError as e:
         logger.error(f"Failed to create metadata table: {e}")

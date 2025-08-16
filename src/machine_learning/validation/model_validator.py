@@ -4,7 +4,7 @@ import logging
 import psutil
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
 
@@ -346,3 +346,240 @@ def validate_prediction_quality(
             "quality_score": 0.0,
             "error": str(e),
         }
+
+
+def create_validation_data(
+    mlb_data: pd.DataFrame, features: List[str], forecast_days: int
+) -> Optional[Tuple[pd.DataFrame, pd.DataFrame]]:
+    """
+    Create validation data for a single MLB for integrated validation.
+
+    Args:
+        mlb_data: Data for a specific MLB
+        features: List of feature column names
+        forecast_days: Number of days to forecast
+
+    Returns:
+        Tuple of (X_val, y_val) or None if insufficient data
+    """
+    logger = logging.getLogger(__name__)
+
+    try:
+        # Use last 30% of data for validation, minimum 10 samples
+        val_size = max(10, len(mlb_data) // 3)
+
+        if val_size >= len(mlb_data) or val_size < 5:
+            logger.warning(
+                f"Insufficient data for validation: {len(mlb_data)} total, {val_size} validation"
+            )
+            return None
+
+        val_data = mlb_data.iloc[-val_size:]
+
+        # Create validation features and targets
+        X_val = []
+        y_val = []
+
+        for i in range(len(val_data) - forecast_days):
+            if i >= 0 and i + forecast_days < len(val_data):
+                X_val.append(val_data.iloc[i][features].values)
+                y_val.append(
+                    val_data.iloc[i + 1 : i + forecast_days + 1]["quant"].values
+                )
+
+        if len(X_val) == 0:
+            logger.warning("No valid validation samples could be created")
+            return None
+
+        # Convert to DataFrames
+        X_val = pd.DataFrame(X_val, columns=features)
+        y_columns = [f"quant_{i+1}" for i in range(forecast_days)]
+        y_val = pd.DataFrame(y_val, columns=y_columns)
+
+        logger.debug(
+            f"Created validation data: {len(X_val)} samples with {len(features)} features"
+        )
+        return X_val, y_val
+
+    except Exception as e:
+        logger.error(f"Failed to create validation data: {e}")
+        return None
+
+
+def validate_single_model_consistency(
+    model: object, mlb: str
+) -> Tuple[bool, List[str]]:
+    """
+    Validate consistency and structure of a single model for integrated validation.
+
+    Args:
+        model: Model to validate
+        mlb: MLB identifier for logging
+
+    Returns:
+        Tuple of (is_valid, issues_list)
+    """
+    logger = logging.getLogger(__name__)
+    issues = []
+
+    try:
+        # Basic model health checks
+        if not hasattr(model, "predict"):
+            issues.append(f"MLB {mlb}: Model missing predict method")
+
+        # Check if model is fitted (has some state)
+        if hasattr(model, "n_features_in_"):
+            if model.n_features_in_ <= 0:
+                issues.append(
+                    f"MLB {mlb}: Model appears to be unfitted (n_features_in_ <= 0)"
+                )
+
+        # XGBoost specific checks
+        if hasattr(model, "get_booster"):
+            try:
+                booster = model.get_booster()
+                if booster is None:
+                    issues.append(f"MLB {mlb}: XGBoost model has no booster")
+            except Exception as e:
+                issues.append(f"MLB {mlb}: Error accessing XGBoost booster: {e}")
+
+        # MultiOutputRegressor specific checks
+        if hasattr(model, "estimators_"):
+            try:
+                estimators = model.estimators_
+                if not estimators or len(estimators) == 0:
+                    issues.append(f"MLB {mlb}: MultiOutputRegressor has no estimators")
+                else:
+                    # Check each estimator
+                    for i, estimator in enumerate(estimators):
+                        if not hasattr(estimator, "predict"):
+                            issues.append(
+                                f"MLB {mlb}: Estimator {i} missing predict method"
+                            )
+            except Exception as e:
+                issues.append(
+                    f"MLB {mlb}: Error checking MultiOutputRegressor estimators: {e}"
+                )
+
+        logger.debug(f"MLB {mlb}: Model consistency check found {len(issues)} issues")
+        return len(issues) == 0, issues
+
+    except Exception as e:
+        logger.error(f"MLB {mlb}: Model consistency validation failed: {e}")
+        return False, [f"Validation error: {e}"]
+
+
+def compare_single_model_performance(
+    original_model: object,
+    updated_model: object,
+    X_val: pd.DataFrame,
+    y_val: pd.DataFrame,
+    mlb: str,
+    improvement_threshold: float = -5.0,
+) -> Dict[str, any]:
+    """
+    Compare performance between original and updated models for a single MLB.
+
+    This is an enhanced version of compare_model_performance that includes
+    the improvement threshold decision logic for integrated validation.
+
+    Args:
+        original_model: Original trained model
+        updated_model: Updated trained model
+        X_val: Validation features
+        y_val: Validation targets
+        mlb: MLB identifier for logging
+        improvement_threshold: Minimum improvement percentage to accept update
+
+    Returns:
+        Dictionary with performance comparison metrics and recommendation
+    """
+    logger = logging.getLogger(__name__)
+
+    try:
+        # Use existing compare_model_performance function
+        metrics = compare_model_performance(
+            original_model, updated_model, X_val, y_val, mlb
+        )
+
+        # Add recommendation based on improvement threshold
+        improvement_pct = metrics.get("improvement_percentage", -100.0)
+
+        if improvement_pct >= improvement_threshold:
+            if improvement_pct > 0:
+                recommendation = "accept_improved"
+                metrics["recommendation"] = recommendation
+                metrics["reason"] = f"Model improved by {improvement_pct:.2f}%"
+            else:
+                recommendation = "accept_maintained"
+                metrics["recommendation"] = recommendation
+                metrics["reason"] = (
+                    f"Performance maintained within threshold ({improvement_pct:.2f}%)"
+                )
+        else:
+            recommendation = "rollback"
+            metrics["recommendation"] = recommendation
+            metrics["reason"] = (
+                f"Performance degraded by {improvement_pct:.2f}% (below {improvement_threshold}% threshold)"
+            )
+
+        logger.debug(
+            f"MLB {mlb}: Performance comparison recommendation: {recommendation}"
+        )
+        return metrics
+
+    except Exception as e:
+        logger.error(f"MLB {mlb}: Error in single model performance comparison: {e}")
+        return {
+            "original_rmse": float("inf"),
+            "updated_rmse": float("inf"),
+            "original_mae": float("inf"),
+            "updated_mae": float("inf"),
+            "rmse_improvement_percentage": -100.0,
+            "mae_improvement_percentage": -100.0,
+            "improvement_percentage": -100.0,
+            "validation_samples": 0,
+            "recommendation": "rollback",
+            "reason": f"Error during comparison: {e}",
+            "error": str(e),
+        }
+
+
+def quick_model_health_check(model: object, mlb: str) -> bool:
+    """
+    Quick health check for a model to ensure it's usable for predictions.
+
+    Args:
+        model: Model to check
+        mlb: MLB identifier for logging
+
+    Returns:
+        True if model appears healthy, False otherwise
+    """
+    logger = logging.getLogger(__name__)
+
+    try:
+        # Basic checks
+        if not hasattr(model, "predict"):
+            logger.warning(f"MLB {mlb}: Model missing predict method")
+            return False
+
+        # Try a dummy prediction to ensure model is functional
+        if hasattr(model, "n_features_in_") and model.n_features_in_ > 0:
+            dummy_features = np.zeros((1, model.n_features_in_))
+            try:
+                _ = model.predict(dummy_features)
+                return True
+            except Exception as e:
+                logger.warning(f"MLB {mlb}: Model prediction test failed: {e}")
+                return False
+        else:
+            # If we can't determine feature count, assume it's okay
+            logger.debug(
+                f"MLB {mlb}: Could not determine feature count, assuming model is healthy"
+            )
+            return True
+
+    except Exception as e:
+        logger.warning(f"MLB {mlb}: Model health check failed: {e}")
+        return False

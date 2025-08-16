@@ -39,18 +39,21 @@ from data_management.data_merger import (
 )
 from estimation.model_forecast import (
     update_mlb_models_incremental,
-    validate_model_improvement,
     forecast_future_sales_direct,
 )
 from estimation.model_storage import save_models, load_models, archive_models
 from validation.forecast_validator import (
-    validate_forecasts,
     calculate_historical_stats,
-    validate_forecast_trends,
 )
 from validation.model_validator import (
-    validate_model_consistency,
     monitor_memory_usage_during_validation,
+)
+
+# Import integrated validation module
+from pipeline.integrated_validator import (
+    ValidationContext,
+    process_mlb_batch_integrated,
+    validate_final_results,
 )
 
 # Configure plotting backend
@@ -70,7 +73,10 @@ def process_mlb_batch_with_validation(
     rollback_stats: Dict,
 ) -> Dict:
     """
-    Process a batch of MLBs with incremental updates, validation, and rollback.
+    DEPRECATED: Use process_mlb_batch_integrated instead.
+
+    This function is kept for backward compatibility but now uses the
+    integrated validation approach internally.
 
     Args:
         batch_mlbs: List of MLB codes to process
@@ -81,118 +87,19 @@ def process_mlb_batch_with_validation(
     Returns:
         Dictionary with 'models' and 'forecasts' keys containing successful updates
     """
-    batch_results = {"models": {}, "forecasts": {}}
+    # Create validation context for integrated approach
+    historical_stats = calculate_historical_stats(feature_data)
+    context = ValidationContext(
+        historical_stats=historical_stats,
+        rollback_stats=rollback_stats,
+        improvement_threshold=-5.0,  # Allow up to 5% degradation
+        additional_rounds=25,  # Conservative rounds for daily updates
+    )
 
-    # Conservative additional rounds for daily updates
-    additional_rounds = 25
-
-    for mlb in batch_mlbs:
-        try:
-            logger.info(f"Processing MLB {mlb}...")
-
-            # Get data for this specific MLB
-            mlb_data = feature_data[feature_data["mlb"] == mlb].copy()
-            if len(mlb_data) < 10:  # Need minimum data for meaningful update
-                logger.warning(
-                    f"MLB {mlb}: Insufficient data ({len(mlb_data)} rows), skipping"
-                )
-                rollback_stats["mlbs_failed"] += 1
-                continue
-
-            # Get original model
-            original_model = original_models[mlb]
-
-            # Perform incremental update with conservative additional rounds
-            try:
-                updated_model = update_mlb_models_incremental(
-                    {mlb: original_model}, mlb_data, additional_rounds=additional_rounds
-                )[mlb]
-
-                # Validate model improvement
-                # Create validation data from the last 30% of MLB data
-                val_size = max(
-                    10, len(mlb_data) // 3
-                )  # At least 10 samples for validation
-                val_data = mlb_data.iloc[-val_size:]
-
-                # Prepare validation features and targets for 90-day forecasting
-                FEATURES = ["day_of_week", "day_of_month", "rolling_mean_3", "lag_1"]
-                forecast_days = AppConfig.FORECAST_DAYS_LONG
-
-                # Create validation data similar to training format
-                X_val = []
-                y_val = []
-                for i in range(len(val_data) - forecast_days):
-                    X_val.append(val_data.iloc[i][FEATURES].values)
-                    y_val.append(
-                        val_data.iloc[i + 1 : i + forecast_days + 1]["quant"].values
-                    )
-
-                if len(X_val) > 0:
-                    X_val = pd.DataFrame(X_val, columns=FEATURES)
-                    y_columns = [f"quant_{i+1}" for i in range(forecast_days)]
-                    y_val = pd.DataFrame(y_val, columns=y_columns)
-
-                    # Validate improvement
-                    validation_result = validate_model_improvement(
-                        original_model, updated_model, (X_val, y_val)
-                    )
-
-                    # Decision logic: keep updated model if improved or maintained performance
-                    # (within 5% degradation threshold)
-                    improvement_threshold = -5.0  # Allow up to 5% degradation
-
-                    if (
-                        validation_result["improvement_percentage"]
-                        >= improvement_threshold
-                    ):
-                        if validation_result["improvement_percentage"] > 0:
-                            rollback_stats["models_improved"] += 1
-                            decision = "improved"
-                        else:
-                            rollback_stats["models_maintained"] += 1
-                            decision = "maintained"
-
-                        batch_results["models"][mlb] = updated_model
-
-                        # Generate forecast for this updated model
-                        forecast_result = generate_forecast_for_mlb(
-                            mlb, updated_model, mlb_data
-                        )
-                        if forecast_result:
-                            batch_results["forecasts"][mlb] = forecast_result
-
-                        logger.info(
-                            f"MLB {mlb}: Model {decision} "
-                            f"({validation_result['improvement_percentage']:.2f}% change), keeping update"
-                        )
-                    else:
-                        # Rollback to original model
-                        rollback_stats["models_rolled_back"] += 1
-                        logger.info(
-                            f"MLB {mlb}: Model degraded "
-                            f"({validation_result['improvement_percentage']:.2f}% change), rolling back"
-                        )
-                        # Don't include in batch_results, effectively keeping original model
-                else:
-                    # Not enough validation data, keep the update but log warning
-                    rollback_stats["models_maintained"] += 1
-                    batch_results["models"][mlb] = updated_model
-                    logger.warning(
-                        f"MLB {mlb}: Insufficient validation data, keeping update by default"
-                    )
-
-            except Exception as update_error:
-                logger.error(f"MLB {mlb}: Incremental update failed: {update_error}")
-                rollback_stats["mlbs_failed"] += 1
-                continue
-
-        except Exception as e:
-            logger.error(f"MLB {mlb}: Processing failed: {e}")
-            rollback_stats["mlbs_failed"] += 1
-            continue
-
-    return batch_results
+    # Use the integrated validation approach
+    return process_mlb_batch_integrated(
+        batch_mlbs, original_models, feature_data, context
+    )
 
 
 def generate_forecast_for_mlb(
@@ -541,21 +448,37 @@ def run_daily_mode():
         logger.info(f"MLBs failed: {rollback_stats['mlbs_failed']}")
         logger.info(f"Final models saved: {models_updated}")
 
-        # Step 5.5: Additional model validation and consistency checks
-        if updated_models:
-            logger.info("Step 5.5: Performing additional model validation...")
+        # Step 5.5: Integrated final validation (replaces separate model and forecast validation)
+        if updated_models or final_forecasts:
+            logger.info("Step 5.5: Performing integrated final validation...")
             try:
-                is_consistent, consistency_issues = validate_model_consistency(
-                    updated_models
+                # Create validation context for final check
+                context = ValidationContext(
+                    historical_stats=historical_stats, rollback_stats=rollback_stats
                 )
-                if not is_consistent or consistency_issues:
+
+                # Use integrated final validation
+                validated_models, validated_forecasts, validation_issues = (
+                    validate_final_results(updated_models, final_forecasts, context)
+                )
+
+                # Log validation results
+                if validation_issues:
                     logger.warning(
-                        f"Model consistency check found {len(consistency_issues)} issues:"
+                        f"Final validation found {len(validation_issues)} issues:"
                     )
-                    for issue in consistency_issues[:5]:  # Log first 5 issues
+                    for issue in validation_issues[:10]:  # Log first 10 issues
                         logger.warning(f"  - {issue}")
+                    if len(validation_issues) > 10:
+                        logger.warning(
+                            f"  ... and {len(validation_issues) - 10} more issues"
+                        )
                 else:
-                    logger.info("All models passed consistency validation")
+                    logger.info("All models and forecasts passed final validation")
+
+                # Use validated results
+                updated_models = validated_models
+                final_forecasts = validated_forecasts
 
                 # Monitor memory usage during validation
                 memory_stats = monitor_memory_usage_during_validation()
@@ -564,57 +487,19 @@ def run_daily_mode():
                     f"{memory_stats['percent']:.1f}% of system memory"
                 )
 
-            except Exception as e:
-                logger.error(f"Additional model validation failed: {e}")
-                logger.warning(
-                    "Continuing with models that passed initial validation..."
-                )
-
-        # Step 6: Validate forecasts before saving
-        if final_forecasts:
-            logger.info(f"Step 6: Validating {len(final_forecasts)} forecasts...")
-            try:
-                validated_forecasts, validation_issues = validate_forecasts(
-                    final_forecasts, historical_stats
-                )
-
-                # Log validation results
-                if validation_issues:
-                    logger.warning(
-                        f"Forecast validation found {len(validation_issues)} issues:"
-                    )
-                    for issue in validation_issues[:10]:  # Log first 10 issues
-                        logger.warning(f"  - {issue}")
-                    if len(validation_issues) > 10:
-                        logger.warning(
-                            f"  ... and {len(validation_issues) - 10} more issues"
-                        )
-
-                # Optional: Check forecast trends for additional warnings
-                trend_warnings = validate_forecast_trends(
-                    validated_forecasts, historical_stats
-                )
-                if trend_warnings:
-                    logger.info(
-                        f"Forecast trend analysis found {len(trend_warnings)} warnings:"
-                    )
-                    for warning in trend_warnings[:5]:  # Log first 5 warnings
-                        logger.info(f"  - {warning}")
-
-                # Use validated forecasts for saving
-                final_forecasts = validated_forecasts
                 logger.info(
-                    f"Forecast validation completed: {len(final_forecasts)} forecasts validated"
+                    f"Integrated validation completed: {len(validated_models)} models, "
+                    f"{len(validated_forecasts)} forecasts validated"
                 )
 
             except Exception as e:
-                logger.error(f"Forecast validation failed: {e}")
-                logger.warning("Proceeding with unvalidated forecasts...")
+                logger.error(f"Integrated final validation failed: {e}")
+                logger.warning("Proceeding with pre-validation results...")
 
-        # Step 6.5: Save forecasts to SQL
+        # Step 6: Save forecasts to SQL
         if final_forecasts:
             logger.info(
-                f"Step 6.5: Saving {len(final_forecasts)} validated forecasts to SQL database..."
+                f"Step 6: Saving {len(final_forecasts)} validated forecasts to SQL database..."
             )
             try:
                 db_manager.save_forecasts_to_sql(final_forecasts)
