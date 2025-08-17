@@ -16,7 +16,7 @@ from sklearn.multioutput import MultiOutputRegressor
 
 
 def forecast_future_sales_direct(
-    data: pd.DataFrame, forecast_days: int
+    data: pd.DataFrame, forecast_days: int, lookback_months: Optional[int] = None
 ) -> tuple[dict, dict]:
     """
     For each MLB in the data, perform a train/test split as usual,
@@ -27,6 +27,8 @@ def forecast_future_sales_direct(
     Args:
         data (pd.DataFrame): DataFrame containing data for multiple MLBs.
         forecast_days (int): Number of days into the future to forecast.
+        lookback_months (Optional[int]): If specified, only use data from the last N months for training.
+                                        If None, use all available data. Used for sliding window retraining.
 
     Returns:
         tuple[dict, dict]: Tuple containing:
@@ -64,6 +66,19 @@ def forecast_future_sales_direct(
         if not isinstance(mlb_data.index, pd.DatetimeIndex):
             mlb_data.index = pd.to_datetime(mlb_data.index)
         mlb_data = mlb_data.sort_index()
+
+        # Apply lookback_months filter if specified (for sliding window retraining)
+        if lookback_months is not None:
+            cutoff_date = pd.Timestamp.now().normalize() - pd.DateOffset(
+                months=lookback_months
+            )
+            original_length = len(mlb_data)
+            mlb_data = mlb_data[mlb_data.index >= cutoff_date]
+            if len(mlb_data) < original_length:
+                logger.debug(
+                    f"MLB {mlb}: Applied {lookback_months}-month lookback filter - "
+                    f"reduced from {original_length} to {len(mlb_data)} records"
+                )
 
         # Get the SKU for this MLB (since each MLB maps to one SKU)
         sku = mlb_data["sku"].iloc[0] if "sku" in mlb_data.columns else None
@@ -172,7 +187,10 @@ def forecast_future_sales_direct(
 
 
 def forecast_future_sales_direct_limited(
-    data: pd.DataFrame, forecast_days: int, max_mlbs: int
+    data: pd.DataFrame,
+    forecast_days: int,
+    max_mlbs: int,
+    lookback_months: Optional[int] = None,
 ) -> tuple[dict, dict]:
     """
     Limited version of forecast_future_sales_direct that stops after processing max_mlbs successful forecasts.
@@ -182,6 +200,8 @@ def forecast_future_sales_direct_limited(
         data (pd.DataFrame): DataFrame containing data for multiple MLBs.
         forecast_days (int): Number of days into the future to forecast.
         max_mlbs (int): Maximum number of MLBs to successfully process before stopping.
+        lookback_months (Optional[int]): If specified, only use data from the last N months for training.
+                                        If None, use all available data. Used for sliding window retraining.
 
     Returns:
         tuple[dict, dict]: Tuple containing:
@@ -235,6 +255,19 @@ def forecast_future_sales_direct_limited(
         if not isinstance(mlb_data.index, pd.DatetimeIndex):
             mlb_data.index = pd.to_datetime(mlb_data.index)
         mlb_data = mlb_data.sort_index()
+
+        # Apply lookback_months filter if specified (for sliding window retraining)
+        if lookback_months is not None:
+            cutoff_date = pd.Timestamp.now().normalize() - pd.DateOffset(
+                months=lookback_months
+            )
+            original_length = len(mlb_data)
+            mlb_data = mlb_data[mlb_data.index >= cutoff_date]
+            if len(mlb_data) < original_length:
+                logger.debug(
+                    f"MLB {mlb}: Applied {lookback_months}-month lookback filter - "
+                    f"reduced from {original_length} to {len(mlb_data)} records"
+                )
 
         # Get the SKU for this MLB (since each MLB maps to one SKU)
         sku = mlb_data["sku"].iloc[0] if "sku" in mlb_data.columns else None
@@ -703,6 +736,7 @@ def update_mlb_models_incremental(
     existing_models: Dict[str, MultiOutputRegressor],
     new_data: pd.DataFrame,
     additional_rounds: int = 100,
+    max_mlbs: Optional[int] = None,
 ) -> Dict[str, MultiOutputRegressor]:
     """
     Update multiple MLB models incrementally with new data.
@@ -714,6 +748,7 @@ def update_mlb_models_incremental(
         existing_models: Dictionary of existing trained models keyed by MLB
         new_data: DataFrame containing new data for all MLBs
         additional_rounds: Number of additional boosting rounds for continuation
+        max_mlbs: Optional limit on number of MLBs to process (for testing)
 
     Returns:
         Dictionary of updated models keyed by MLB
@@ -721,8 +756,29 @@ def update_mlb_models_incremental(
     logger = logging.getLogger(__name__)
     updated_models = {}
 
-    # Process each MLB in the new data
-    for mlb in new_data["mlb"].unique():
+    # Determine which MLBs to process
+    # Priority: existing models + new MLBs with data (limited by max_mlbs for testing)
+    existing_mlbs = set(existing_models.keys())
+    available_mlbs = set(new_data["mlb"].unique())
+
+    # Combine existing MLBs that have new data + completely new MLBs
+    mlbs_to_process = list(existing_mlbs & available_mlbs) + list(
+        available_mlbs - existing_mlbs
+    )
+
+    # Apply max_mlbs limit for testing
+    if max_mlbs is not None:
+        mlbs_to_process = mlbs_to_process[:max_mlbs]
+        logger.info(
+            f"Limited processing to {len(mlbs_to_process)} MLBs for testing (max_mlbs={max_mlbs})"
+        )
+
+    logger.info(
+        f"Processing {len(mlbs_to_process)} MLBs: {len(existing_mlbs & set(mlbs_to_process))} existing + {len(set(mlbs_to_process) - existing_mlbs)} new"
+    )
+
+    # Process each MLB
+    for mlb in mlbs_to_process:
         mlb_data = new_data[new_data["mlb"] == mlb].copy()
 
         # Ensure data is sorted by date

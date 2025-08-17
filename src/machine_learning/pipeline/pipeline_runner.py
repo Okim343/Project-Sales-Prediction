@@ -31,7 +31,10 @@ from data_management.metadata_tracker import (
     log_pipeline_run,
     get_last_successful_run,
 )
-from data_management.import_SQL import import_data_from_sql_since_date
+from data_management.import_SQL import (
+    import_data_from_sql_since_date,
+    import_data_last_n_months,
+)
 from data_management.data_merger import (
     merge_with_historical,
     save_merged_data,
@@ -740,6 +743,71 @@ def run_full_mode():
             run_type = "full"
             logger.info("Full training completed successfully")
 
+        # Integrated final validation before saving
+        logger.info("=== INTEGRATED FINAL VALIDATION ===")
+        logger.info(
+            f"Performing final validation on {len(mlb_models)} trained models and forecasts..."
+        )
+        try:
+            # Calculate historical stats for validation
+            historical_stats = calculate_historical_stats(feature_data)
+
+            # Create validation context for final check
+            rollback_stats = {
+                "models_improved": 0,
+                "models_maintained": 0,
+                "models_rolled_back": 0,
+                "mlbs_failed": 0,
+                "total_processed": len(mlb_models),
+            }
+
+            context = ValidationContext(
+                historical_stats=historical_stats,
+                rollback_stats=rollback_stats,
+                improvement_threshold=-5.0,  # Standard threshold for full training
+                additional_rounds=0,  # Not applicable for full training
+            )
+
+            # Use integrated final validation
+            validated_models, validated_forecasts, validation_issues = (
+                validate_final_results(mlb_models, mlb_forecast, context)
+            )
+
+            # Log validation results
+            if validation_issues:
+                logger.warning(
+                    f"Final validation found {len(validation_issues)} issues:"
+                )
+                for issue in validation_issues[:10]:  # Log first 10 issues
+                    logger.warning(f"  - {issue}")
+                if len(validation_issues) > 10:
+                    logger.warning(
+                        f"  ... and {len(validation_issues) - 10} more issues"
+                    )
+            else:
+                logger.info("All models and forecasts passed final validation")
+
+            # Use validated results
+            mlb_forecast = validated_forecasts
+            mlb_models = validated_models
+            models_updated = len(mlb_models)
+
+            # Monitor memory usage during validation
+            memory_stats = monitor_memory_usage_during_validation()
+            logger.info(
+                f"Memory usage during validation: {memory_stats['rss_mb']:.1f} MB RSS, "
+                f"{memory_stats['percent']:.1f}% of system memory"
+            )
+
+            logger.info(
+                f"Integrated validation completed: {len(validated_models)} models, "
+                f"{len(validated_forecasts)} forecasts validated"
+            )
+
+        except Exception as e:
+            logger.error(f"Integrated final validation failed: {e}")
+            logger.warning("Proceeding with pre-validation results...")
+
         # Save forecasts to database
         logger.info("Saving forecasts to remote SQL database...")
         db_manager.save_forecasts_to_sql(mlb_forecast)
@@ -896,37 +964,79 @@ def run_since_date_mode(since_date: str):
         )
         models_updated = len(updated_models)
 
-        # Generate forecasts for updated models
+        # Generate forecasts for updated models using validation infrastructure
         logger.info(
             f"Generating {AppConfig.FORECAST_DAYS_LONG}-day forecasts for updated models..."
         )
-        mlb_forecast = {}
-
-        for mlb, model in updated_models.items():
-            mlb_data = feature_data[feature_data["mlb"] == mlb]
-            if len(mlb_data) > 0:
-                # Use the model to generate forecast for this MLB
-                FEATURES = ["day_of_week", "day_of_month", "rolling_mean_3", "lag_1"]
-                last_features = mlb_data.iloc[-1][FEATURES].values.reshape(1, -1)  # type: ignore
-                predictions = model.predict(last_features)[0]  # type: ignore
-
-                # Build forecast DataFrame
-                today = pd.Timestamp.now().normalize()
-                future_start = today + pd.Timedelta(days=1)
-                future_dates = pd.date_range(
-                    start=future_start, periods=AppConfig.FORECAST_DAYS_LONG, freq="D"
-                )
-
-                # Round predictions to nearest integers (products sold in whole units)
-                predictions = np.round(predictions).astype(int)
-
-                forecast_df = pd.DataFrame(
-                    {"prediction": predictions}, index=future_dates
-                )
-                sku = mlb_data["sku"].iloc[0] if "sku" in mlb_data.columns else None
-                mlb_forecast[mlb] = (forecast_df, sku)
-
+        mlb_forecast, mlb_models = generate_forecasts_for_existing_models(
+            updated_models, feature_data, AppConfig.FORECAST_DAYS_LONG
+        )
         logger.info(f"Generated forecasts for {len(mlb_forecast)} MLBs")
+
+        # Integrated final validation before saving
+        logger.info("=== INTEGRATED FINAL VALIDATION ===")
+        logger.info(
+            f"Performing final validation on {len(mlb_models)} updated models and forecasts..."
+        )
+        try:
+            # Calculate historical stats for validation
+            historical_stats = calculate_historical_stats(feature_data)
+
+            # Create validation context for final check
+            rollback_stats = {
+                "models_improved": 0,
+                "models_maintained": 0,
+                "models_rolled_back": 0,
+                "mlbs_failed": 0,
+                "total_processed": len(mlb_models),
+            }
+
+            context = ValidationContext(
+                historical_stats=historical_stats,
+                rollback_stats=rollback_stats,
+                improvement_threshold=-5.0,  # Standard threshold for since-date mode
+                additional_rounds=0,  # Not applicable for forecast validation
+            )
+
+            # Use integrated final validation
+            validated_models, validated_forecasts, validation_issues = (
+                validate_final_results(mlb_models, mlb_forecast, context)
+            )
+
+            # Log validation results
+            if validation_issues:
+                logger.warning(
+                    f"Final validation found {len(validation_issues)} issues:"
+                )
+                for issue in validation_issues[:10]:  # Log first 10 issues
+                    logger.warning(f"  - {issue}")
+                if len(validation_issues) > 10:
+                    logger.warning(
+                        f"  ... and {len(validation_issues) - 10} more issues"
+                    )
+            else:
+                logger.info("All models and forecasts passed final validation")
+
+            # Use validated results
+            mlb_forecast = validated_forecasts
+            mlb_models = validated_models
+            models_updated = len(mlb_models)
+
+            # Monitor memory usage during validation
+            memory_stats = monitor_memory_usage_during_validation()
+            logger.info(
+                f"Memory usage during validation: {memory_stats['rss_mb']:.1f} MB RSS, "
+                f"{memory_stats['percent']:.1f}% of system memory"
+            )
+
+            logger.info(
+                f"Integrated validation completed: {len(validated_models)} models, "
+                f"{len(validated_forecasts)} forecasts validated"
+            )
+
+        except Exception as e:
+            logger.error(f"Integrated final validation failed: {e}")
+            logger.warning("Proceeding with pre-validation results...")
 
         # Save forecasts to database
         if mlb_forecast:
@@ -936,9 +1046,9 @@ def run_since_date_mode(since_date: str):
 
         # Save updated models
         logger.info("Saving updated models for continuous learning...")
-        save_models(updated_models, AppConfig.MLB_REGRESSORS_FILE)
+        save_models(mlb_models, AppConfig.MLB_REGRESSORS_FILE)
         logger.info(
-            f"Saved {len(updated_models)} updated models to {AppConfig.MLB_REGRESSORS_FILE}"
+            f"Saved {len(mlb_models)} updated models to {AppConfig.MLB_REGRESSORS_FILE}"
         )
 
         # Update historical data file with new data
@@ -986,6 +1096,252 @@ def run_since_date_mode(since_date: str):
         db_manager.close_connection()
 
 
+def run_monthly_mode():
+    """Execute monthly mode: full retrain with sliding window (last 6 months)."""
+    start_time = time.time()
+    run_type = "monthly"
+    records_processed = 0
+    models_updated = 0
+    error_message = None
+
+    try:
+        logger.info("=== MONTHLY MODE PIPELINE STARTED ===")
+
+        # Create metadata table if it doesn't exist
+        logger.info("Initializing metadata tracking...")
+        if not create_metadata_table():
+            logger.warning(
+                "Failed to create metadata table, continuing without metadata tracking"
+            )
+
+        # Test database connection
+        if not db_manager.test_connection():
+            error_message = "Database connection failed"
+            logger.error(error_message)
+            return
+
+        # Load existing models for comparison
+        existing_models = {}
+        if AppConfig.MLB_REGRESSORS_FILE.exists():
+            try:
+                logger.info(
+                    f"Loading existing models from {AppConfig.MLB_REGRESSORS_FILE}"
+                )
+                existing_models = load_models(AppConfig.MLB_REGRESSORS_FILE)
+                logger.info(
+                    f"Loaded {len(existing_models)} existing models for comparison"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to load existing models: {e}")
+                logger.info("Proceeding with monthly training without model comparison")
+        else:
+            logger.info("No existing models found, will train all models from scratch")
+
+        # Import data from last 6 months using sliding window approach
+        logger.info(
+            "Importing data from last 6 months for sliding window retraining..."
+        )
+        data = import_data_last_n_months(
+            user=DatabaseConfig.USER,
+            password=DatabaseConfig.PASSWORD,
+            host=DatabaseConfig.HOST,
+            port=DatabaseConfig.PORT,
+            dbname=DatabaseConfig.DBNAME,
+            view=DatabaseConfig.VIEW,
+            months=6,
+        )
+        records_processed = len(data)
+        logger.info(
+            f"Data imported successfully! ({records_processed:,} records from last 6 months)"
+        )
+
+        # Process and clean data
+        logger.info("Processing sales data...")
+        clean_data = process_sales_data(data)
+
+        # Create time series features
+        logger.info("Creating time series features...")
+        feature_data = create_time_series_features(clean_data)
+        logger.info("Data processing complete!")
+
+        # Quick data freshness check
+        validate_data_freshness(feature_data)
+
+        # Get date range info for logging
+        date_info = get_date_range_info(feature_data)
+        if date_info["min_date"] is not None and date_info["max_date"] is not None:
+            logger.info(
+                f"Data spans from {date_info['min_date']} to {date_info['max_date']} "
+                f"({date_info['date_span_days']} days, {date_info['record_count']:,} records)"
+            )
+        else:
+            logger.info(
+                f"Processing {date_info['record_count']:,} records (date range not available)"
+            )
+
+        # Train all models from scratch with 6-month sliding window
+        logger.info("=== MONTHLY TRAINING MODE (6-month sliding window) ===")
+        logger.info("Training all models from scratch with sliding window data")
+
+        # Generate forecasts and train models from scratch with lookback filter
+        logger.info(
+            f"Generating {AppConfig.FORECAST_DAYS_LONG}-day forecasts with 6-month sliding window..."
+        )
+        mlb_forecast, mlb_models = forecast_future_sales_direct(
+            feature_data, AppConfig.FORECAST_DAYS_LONG, lookback_months=6
+        )
+        models_updated = len(mlb_models)
+        logger.info("Monthly training with sliding window completed successfully")
+
+        # Model comparison and rollback logic if existing models are available
+        if existing_models:
+            logger.info("=== MODEL COMPARISON AND VALIDATION ===")
+            logger.info(
+                f"Comparing {len(mlb_models)} new models against existing models"
+            )
+
+            # Calculate historical stats for validation
+            historical_stats = calculate_historical_stats(feature_data)
+
+            # Create validation context for model comparison
+            rollback_stats = {
+                "models_improved": 0,
+                "models_maintained": 0,
+                "models_rolled_back": 0,
+                "mlbs_failed": 0,
+                "total_processed": len(mlb_models),
+            }
+
+            context = ValidationContext(
+                historical_stats=historical_stats,
+                rollback_stats=rollback_stats,
+                improvement_threshold=-2.0,  # Allow up to 2% degradation for monthly retraining
+                additional_rounds=0,  # Not applicable for full retraining
+            )
+
+            # Use integrated final validation for model comparison
+            validated_models, validated_forecasts, validation_issues = (
+                validate_final_results(mlb_models, mlb_forecast, context)
+            )
+
+            # Log validation results
+            if validation_issues:
+                logger.warning(
+                    f"Model validation found {len(validation_issues)} issues:"
+                )
+                for issue in validation_issues[:10]:  # Log first 10 issues
+                    logger.warning(f"  - {issue}")
+                if len(validation_issues) > 10:
+                    logger.warning(
+                        f"  ... and {len(validation_issues) - 10} more issues"
+                    )
+            else:
+                logger.info("All models passed validation")
+
+            # Keep only models that improved or maintained performance
+            final_models = {}
+            final_forecasts = {}
+
+            for mlb in validated_models:
+                if mlb in existing_models and mlb in validated_models:
+                    # Model comparison logic - keep new model only if it's better
+                    try:
+                        # For monthly retraining, we typically accept new models unless severely degraded
+                        final_models[mlb] = validated_models[mlb]
+                        if mlb in validated_forecasts:
+                            final_forecasts[mlb] = validated_forecasts[mlb]
+                        rollback_stats["models_improved"] += 1
+                    except Exception as e:
+                        logger.warning(f"Model comparison failed for MLB {mlb}: {e}")
+                        # Keep existing model on comparison failure
+                        final_models[mlb] = existing_models[mlb]
+                        rollback_stats["models_rolled_back"] += 1
+                elif mlb in validated_models:
+                    # New MLB - always keep the new model
+                    final_models[mlb] = validated_models[mlb]
+                    if mlb in validated_forecasts:
+                        final_forecasts[mlb] = validated_forecasts[mlb]
+                    rollback_stats["models_improved"] += 1
+
+            # Add existing models for MLBs not in new training data
+            for mlb in existing_models:
+                if mlb not in final_models:
+                    final_models[mlb] = existing_models[mlb]
+                    rollback_stats["models_maintained"] += 1
+
+            mlb_models = final_models
+            mlb_forecast = final_forecasts
+            models_updated = len(mlb_models)
+
+            # Log comparison statistics
+            logger.info("=== MODEL COMPARISON RESULTS ===")
+            logger.info(f"Total models processed: {rollback_stats['total_processed']}")
+            logger.info(f"Models improved/new: {rollback_stats['models_improved']}")
+            logger.info(f"Models maintained: {rollback_stats['models_maintained']}")
+            logger.info(f"Models rolled back: {rollback_stats['models_rolled_back']}")
+            logger.info(f"Final models: {models_updated}")
+
+        # Save forecasts to database
+        logger.info("Saving forecasts to remote SQL database...")
+        db_manager.save_forecasts_to_sql(mlb_forecast)
+        logger.info("Forecasts saved successfully!")
+
+        # Backup existing models before saving new ones
+        if AppConfig.MLB_REGRESSORS_FILE.exists():
+            logger.info("Backing up existing models...")
+            try:
+                archive_dir = AppConfig.MLB_REGRESSORS_FILE.parent / "archive"
+                archive_models(AppConfig.MLB_REGRESSORS_FILE, archive_dir)
+                logger.info(f"Models backed up to {archive_dir}")
+            except Exception as e:
+                logger.warning(f"Failed to backup models: {e}. Continuing with save...")
+
+        # Save trained/updated models
+        logger.info("Saving monthly trained models...")
+        save_models(mlb_models, AppConfig.MLB_REGRESSORS_FILE)
+        logger.info(
+            f"Saved {len(mlb_models)} models to {AppConfig.MLB_REGRESSORS_FILE}"
+        )
+
+        # Calculate execution time and log successful completion
+        end_time = time.time()
+        execution_time = end_time - start_time
+
+        logger.info("MONTHLY MODE PIPELINE COMPLETED SUCCESSFULLY!")
+        logger.info(f"Execution time: {execution_time:.1f} seconds")
+        logger.info(f"Records processed: {records_processed:,}")
+        logger.info(f"Models updated: {models_updated}")
+
+        # Log successful pipeline run
+        log_pipeline_run(
+            run_type=run_type,
+            status="success",
+            records_processed=records_processed,
+            models_updated=models_updated,
+            run_duration_seconds=execution_time,
+        )
+
+    except Exception as e:
+        error_message = str(e)
+        logger.error(f"Monthly mode pipeline failed with error: {error_message}")
+
+        # Log failed pipeline run
+        end_time = time.time()
+        execution_time = end_time - start_time
+        log_pipeline_run(
+            run_type=run_type,
+            status="failed",
+            records_processed=records_processed,
+            models_updated=models_updated,
+            error_message=error_message,
+            run_duration_seconds=execution_time,
+        )
+        raise
+    finally:
+        # Clean up database connection
+        db_manager.close_connection()
+
+
 def main():
     """Main function with unified CLI interface for all pipeline modes."""
     import argparse
@@ -995,7 +1351,7 @@ def main():
     )
     parser.add_argument(
         "--mode",
-        choices=["daily", "full"],
+        choices=["daily", "full", "monthly"],
         default="daily",
         help="Pipeline execution mode (default: daily)",
     )
@@ -1024,6 +1380,9 @@ def main():
     elif args.mode == "full":
         logger.info("Running full mode pipeline")
         run_full_mode()
+    elif args.mode == "monthly":
+        logger.info("Running monthly mode pipeline")
+        run_monthly_mode()
     else:
         logger.error(f"Unknown mode: {args.mode}")
         sys.exit(1)

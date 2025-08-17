@@ -93,6 +93,62 @@ def import_data_from_sql_since_date(
         return pd.DataFrame()
 
 
+def import_data_last_n_months(
+    user: str,
+    password: str,
+    host: str,
+    port: str,
+    dbname: str,
+    view: str,
+    months: int = 6,
+    chunksize: int = 10000,
+) -> pd.DataFrame:
+    """
+    Import data from PostgreSQL database for the last N months.
+    Enables monthly full retrain with sliding window approach.
+
+    Parameters:
+        user (str): Database username.
+        password (str): Database password.
+        host (str): Database host IP or hostname.
+        port (str or int): Database port.
+        dbname (str): Database name.
+        view (str): What view is being called.
+        months (int): Number of months to look back (default is 6).
+        chunksize (int): Number of rows to read per chunk (default is 10000).
+
+    Returns:
+        pd.DataFrame: DataFrame containing data from the last N months.
+
+    Note:
+        This function assumes the view has a 'date_created' column for filtering.
+        Uses sliding window approach for monthly full retraining.
+    """
+    try:
+        engine = create_engine(f"postgresql://{user}:{password}@{host}:{port}/{dbname}")
+
+        # Add date filter to query - only get records from last N months
+        query = f"SELECT * FROM {view} WHERE date_created >= CURRENT_DATE - INTERVAL '{months} months' ORDER BY date_created DESC"
+
+        logger.info(f"Importing data from {view} for the last {months} months")
+
+        # Read data in chunks with date filter
+        chunks = pd.read_sql_query(query, engine, chunksize=chunksize)
+        df = pd.concat(chunks, ignore_index=True)
+
+        # Check the size of the DataFrame
+        memory_usage_mb = df.memory_usage(deep=True).sum() / (1024 * 1024)
+        logger.info(f"Imported {len(df)} records from last {months} months")
+        logger.info(f"Total memory usage: {memory_usage_mb:.2f} MB")
+
+        return df
+
+    except Exception as e:
+        logger.error(f"Failed to import data from last {months} months: {e}")
+        # Return empty DataFrame with expected columns if import fails
+        return pd.DataFrame()
+
+
 if __name__ == "__main__":
     print("Importing data from SQL...")
 
