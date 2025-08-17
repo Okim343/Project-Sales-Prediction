@@ -73,7 +73,7 @@ repos:
     rev: v2.3.0
     hooks:
       - id: codespell
-        args: ['--ignore-words-list=mape,MAPE']
+        args: ['--ignore-words-list=mape,MAPE,assertin']
   - repo: local
     hooks:
       - id: forbid-to-commit

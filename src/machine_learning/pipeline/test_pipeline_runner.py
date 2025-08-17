@@ -54,6 +54,7 @@ from pipeline.integrated_validator import (
     ValidationContext,
     process_mlb_batch_integrated,
     validate_final_results,
+    validate_monthly_retraining_results,
 )
 
 # Configure plotting backend
@@ -1263,7 +1264,7 @@ def run_monthly_mode():
         if existing_models:
             logger.info("=== MODEL COMPARISON AND VALIDATION (TEST MODE) ===")
             logger.info(
-                f"Comparing {len(mlb_models)} new test models against existing test models"
+                f"Comparing {len(mlb_models)} new test models against {len(existing_models)} existing test models"
             )
 
             # Calculate historical stats for validation
@@ -1285,9 +1286,22 @@ def run_monthly_mode():
                 additional_rounds=0,  # Not applicable for full retraining
             )
 
-            # Use integrated final validation for model comparison
-            validated_models, validated_forecasts, validation_issues = (
-                validate_final_results(mlb_models, mlb_forecast, context)
+            # Use integrated monthly retraining validation with systematic model comparison
+            final_models, validation_results, validation_issues = (
+                validate_monthly_retraining_results(
+                    old_models=existing_models,
+                    new_models=mlb_models,
+                    feature_data=feature_data,
+                    context=context,
+                )
+            )
+
+            # Generate forecasts for final selected models using existing limited functionality
+            logger.info(
+                f"Generating forecasts for {len(final_models)} final models (test mode)..."
+            )
+            final_forecasts, _ = generate_forecasts_for_existing_models_limited(
+                final_models, feature_data, AppConfig.FORECAST_DAYS_LONG
             )
 
             # Log validation results
@@ -1304,48 +1318,47 @@ def run_monthly_mode():
             else:
                 logger.info("All models passed validation (test mode)")
 
-            # Keep only models that improved or maintained performance
-            final_models = {}
-            final_forecasts = {}
-
-            for mlb in validated_models:
-                if mlb in existing_models and mlb in validated_models:
-                    # Model comparison logic - keep new model only if it's better
-                    try:
-                        # For monthly retraining, we typically accept new models unless severely degraded
-                        final_models[mlb] = validated_models[mlb]
-                        if mlb in validated_forecasts:
-                            final_forecasts[mlb] = validated_forecasts[mlb]
-                        rollback_stats["models_improved"] += 1
-                    except Exception as e:
-                        logger.warning(f"Model comparison failed for MLB {mlb}: {e}")
-                        # Keep existing model on comparison failure
-                        final_models[mlb] = existing_models[mlb]
-                        rollback_stats["models_rolled_back"] += 1
-                elif mlb in validated_models:
-                    # New MLB - always keep the new model
-                    final_models[mlb] = validated_models[mlb]
-                    if mlb in validated_forecasts:
-                        final_forecasts[mlb] = validated_forecasts[mlb]
-                    rollback_stats["models_improved"] += 1
-
-            # Add existing models for MLBs not in new training data (limited by test constraints)
-            for mlb in list(existing_models.keys())[:MAX_MLBS_FOR_TESTING]:
-                if mlb not in final_models:
-                    final_models[mlb] = existing_models[mlb]
-                    rollback_stats["models_maintained"] += 1
-
+            # Update variables for consistency with rest of function
             mlb_models = final_models
             mlb_forecast = final_forecasts
             models_updated = len(mlb_models)
 
-            # Log comparison statistics
+            # Log comparison statistics from context rollback_stats
             logger.info("=== MODEL COMPARISON RESULTS (TEST MODE) ===")
-            logger.info(f"Total models processed: {rollback_stats['total_processed']}")
-            logger.info(f"Models improved/new: {rollback_stats['models_improved']}")
-            logger.info(f"Models maintained: {rollback_stats['models_maintained']}")
-            logger.info(f"Models rolled back: {rollback_stats['models_rolled_back']}")
+            logger.info(
+                f"Total models processed: {context.rollback_stats['total_processed']}"
+            )
+            logger.info(
+                f"Models improved/new: {context.rollback_stats['models_improved']}"
+            )
+            logger.info(
+                f"Models maintained: {context.rollback_stats['models_maintained']}"
+            )
+            logger.info(
+                f"Models rolled back: {context.rollback_stats['models_rolled_back']}"
+            )
             logger.info(f"Final models: {models_updated}")
+
+            # Log additional comparison details if available
+            if "model_comparison" in validation_results:
+                comparison_summary = validation_results["model_comparison"].get(
+                    "summary", {}
+                )
+                if comparison_summary:
+                    logger.info(
+                        f"Average improvement: {comparison_summary.get('avg_improvement_pct', 0):.2f}%"
+                    )
+                    logger.info(
+                        f"Comparison errors: {comparison_summary.get('comparison_errors', 0)}"
+                    )
+        else:
+            logger.info(
+                "No existing models found for comparison, using all new models (test mode)"
+            )
+            final_forecasts, _ = generate_forecasts_for_existing_models_limited(
+                mlb_models, feature_data, AppConfig.FORECAST_DAYS_LONG
+            )
+            mlb_forecast = final_forecasts
 
         # Save forecasts to database (SKIP IN TEST MODE)
         logger.info(

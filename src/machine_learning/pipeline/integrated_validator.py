@@ -22,6 +22,11 @@ from validation.model_validator import (
 from validation.forecast_validator import (
     validate_forecasts,
 )
+from validation.model_comparison import (
+    compare_model_versions,
+    generate_comparison_report,
+    recommend_model_updates,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -481,3 +486,218 @@ def _validate_single_forecast(
     except Exception as e:
         logger.error(f"MLB {mlb}: Forecast validation failed: {e}")
         return None
+
+
+def compare_model_versions_integrated(
+    old_models: Dict[str, object],
+    new_models: Dict[str, object],
+    feature_data: pd.DataFrame,
+    context: ValidationContext,
+    conservative_mode: bool = False,
+) -> Tuple[Dict[str, object], Dict, list]:
+    """
+    Orchestrate model version comparison within existing validation flow.
+
+    Args:
+        old_models: Dictionary of existing models keyed by MLB
+        new_models: Dictionary of new models keyed by MLB
+        feature_data: Full dataset with features for validation data creation
+        context: Validation context with historical stats and settings
+        conservative_mode: If True, only recommend updates for clearly better models
+
+    Returns:
+        Tuple of (updated_models_dict, comparison_results, issues_list)
+    """
+    logger.info("=== INTEGRATED MODEL VERSION COMPARISON ===")
+    logger.info(
+        f"Comparing {len(new_models)} new models against {len(old_models)} existing models"
+    )
+
+    issues_list = []
+
+    try:
+        # Step 1: Create validation data for common MLBs
+        validation_data = {}
+        FEATURES = ["day_of_week", "day_of_month", "rolling_mean_3", "lag_1"]
+
+        from config import AppConfig
+
+        forecast_days = AppConfig.FORECAST_DAYS_LONG
+
+        common_mlbs = set(old_models.keys()).intersection(set(new_models.keys()))
+        logger.info(f"Creating validation data for {len(common_mlbs)} common MLBs")
+
+        for mlb in common_mlbs:
+            try:
+                # Get data for this specific MLB
+                mlb_data = feature_data[feature_data["mlb"] == mlb].copy()
+                if len(mlb_data) < 20:  # Need minimum data for validation
+                    logger.warning(
+                        f"MLB {mlb}: Insufficient data for validation ({len(mlb_data)} rows)"
+                    )
+                    continue
+
+                # Create validation data from the last 30% of MLB data
+                val_size = max(10, len(mlb_data) // 3)
+                val_data = mlb_data.iloc[-val_size:]
+
+                # Create validation features and targets
+                X_val, y_val = _create_validation_data(
+                    val_data, FEATURES, forecast_days
+                )
+
+                if len(X_val) > 0:
+                    validation_data[mlb] = (X_val, y_val)
+                    logger.debug(
+                        f"MLB {mlb}: Created validation data with {len(X_val)} samples"
+                    )
+                else:
+                    logger.warning(f"MLB {mlb}: Could not create validation data")
+
+            except Exception as e:
+                logger.warning(f"MLB {mlb}: Failed to create validation data: {e}")
+                issues_list.append(f"MLB {mlb}: Validation data creation failed: {e}")
+                continue
+
+        # Step 2: Perform model version comparison
+        logger.info(
+            f"Performing comparison for {len(validation_data)} MLBs with validation data"
+        )
+
+        comparison_results = compare_model_versions(
+            old_models=old_models,
+            new_models=new_models,
+            validation_data=validation_data,
+            improvement_threshold=context.improvement_threshold,
+            significance_level=0.05,
+        )
+
+        # Step 3: Generate detailed comparison report
+        comparison_report = generate_comparison_report(comparison_results)
+        logger.info("Model version comparison report:\n" + comparison_report)
+
+        # Step 4: Get final recommendations
+        models_to_update, reasoning = recommend_model_updates(
+            comparison_results, conservative_mode=conservative_mode
+        )
+
+        # Log reasoning
+        logger.info("Model update recommendations:")
+        for reason in reasoning:
+            logger.info(f"  {reason}")
+
+        # Step 5: Build final models dictionary based on recommendations
+        final_models = {}
+
+        # Start with all old models
+        final_models.update(old_models)
+
+        # Update with recommended new models
+        updated_count = 0
+        maintained_count = 0
+
+        for mlb in new_models.keys():
+            if models_to_update.get(mlb, False):
+                final_models[mlb] = new_models[mlb]
+                updated_count += 1
+
+                # Update rollback stats for consistency with existing patterns
+                detailed_result = comparison_results.get("comparison_results", {}).get(
+                    mlb, {}
+                )
+                if detailed_result.get("is_new_mlb", False):
+                    context.rollback_stats["models_improved"] += 1
+                elif detailed_result.get("improvement_percentage", 0) > 0:
+                    context.rollback_stats["models_improved"] += 1
+                else:
+                    context.rollback_stats["models_maintained"] += 1
+            else:
+                # Keep old model (if it exists)
+                if mlb in old_models:
+                    maintained_count += 1
+                    context.rollback_stats["models_maintained"] += 1
+                else:
+                    # This shouldn't happen, but handle gracefully
+                    final_models[mlb] = new_models[mlb]
+                    updated_count += 1
+                    context.rollback_stats["models_improved"] += 1
+                    issues_list.append(
+                        f"MLB {mlb}: No old model found, using new model"
+                    )
+
+        logger.info(
+            f"Final model selection: {updated_count} updated, {maintained_count} maintained"
+        )
+
+        # Step 6: Monitor memory usage during comparison
+        from validation.model_validator import monitor_memory_usage_during_validation
+
+        memory_stats = monitor_memory_usage_during_validation()
+        logger.info(
+            f"Memory usage during model comparison: {memory_stats['rss_mb']:.1f} MB RSS, "
+            f"{memory_stats['percent']:.1f}% of system memory"
+        )
+
+        return final_models, comparison_results, issues_list
+
+    except Exception as e:
+        error_msg = f"Integrated model version comparison failed: {e}"
+        logger.error(error_msg)
+        issues_list.append(error_msg)
+
+        # Fallback: return new models on comparison failure
+        logger.warning("Falling back to using new models due to comparison failure")
+        return new_models, {}, issues_list
+
+
+def validate_monthly_retraining_results(
+    old_models: Dict[str, object],
+    new_models: Dict[str, object],
+    feature_data: pd.DataFrame,
+    context: ValidationContext,
+) -> Tuple[Dict[str, object], Dict, list]:
+    """
+    Specialized validation for monthly retraining results with model comparison.
+
+    This function is specifically designed for monthly mode validation, providing
+    more comprehensive comparison logic suitable for full retraining scenarios.
+
+    Args:
+        old_models: Dictionary of existing models keyed by MLB
+        new_models: Dictionary of newly trained models keyed by MLB
+        feature_data: Full dataset with features
+        context: Validation context
+
+    Returns:
+        Tuple of (final_models, validation_results, issues_list)
+    """
+    logger.info("=== MONTHLY RETRAINING VALIDATION ===")
+
+    # Use integrated model comparison with conservative mode for monthly retraining
+    final_models, comparison_results, issues_list = compare_model_versions_integrated(
+        old_models=old_models,
+        new_models=new_models,
+        feature_data=feature_data,
+        context=context,
+        conservative_mode=True,  # Be conservative for monthly retraining
+    )
+
+    # Additional validation specific to monthly retraining
+    validation_results = {
+        "model_comparison": comparison_results,
+        "validation_type": "monthly_retraining",
+        "conservative_mode": True,
+    }
+
+    # Log monthly-specific statistics
+    if "summary" in comparison_results:
+        summary = comparison_results["summary"]
+        logger.info("Monthly retraining summary:")
+        logger.info(f"  Models compared: {summary.get('total_compared', 0)}")
+        logger.info(f"  Models updated: {summary.get('recommend_update', 0)}")
+        logger.info(f"  Models maintained: {summary.get('recommend_keep_old', 0)}")
+        logger.info(
+            f"  Average improvement: {summary.get('avg_improvement_pct', 0):.2f}%"
+        )
+
+    return final_models, validation_results, issues_list

@@ -38,12 +38,30 @@ Web interface for viewing forecasts at http://127.0.0.1:8050
 
 **Run**: `python src/web_app/script_webapp.py`
 
-### 3. Pipeline Scripts
+### 3. `pipeline_runner.py` - Unified Continuous Learning Pipeline
 
-- `pipeline/daily_update.py` - Incremental model updates with new data
-- `pipeline/incremental_pipeline.py` - Full incremental learning pipeline
+Comprehensive pipeline with multiple execution modes:
 
-**Run**: `python src/machine_learning/pipeline/daily_update.py`
+- **Daily mode**: Incremental updates since last run with validation/rollback
+- **Full mode**: Complete training from scratch with fallback capability
+- **Since-date mode**: Incremental updates since specified date with data merging
+- **Monthly mode**: 6-month sliding window retraining with model comparison
+
+**Run**:
+
+```bash
+# Daily mode (default)
+python src/machine_learning/pipeline/pipeline_runner.py
+
+# Full mode
+python src/machine_learning/pipeline/pipeline_runner.py --mode=full
+
+# Monthly mode
+python src/machine_learning/pipeline/pipeline_runner.py --mode=monthly
+
+# Since specific date
+python src/machine_learning/pipeline/pipeline_runner.py --since-date=2024-01-15
+```
 
 ## Configuration
 
@@ -76,7 +94,8 @@ export DB_NAME=your_database
 - **Config**: `src/machine_learning/config.py`
 - **Models**: `src/machine_learning/bld/mlb_regressors.pkl`
 - **Data**: `src/machine_learning/data/raw_sql.csv`
-- **Pipeline**: `src/machine_learning/pipeline/`
+- **Pipeline**: `src/machine_learning/pipeline/pipeline_runner.py`
+- **Validation**: `src/machine_learning/validation/` (model comparison, validation)
 
 ## Database
 
@@ -104,8 +123,8 @@ export DB_NAME=your_database
    # Web dashboard
    python src/web_app/script_webapp.py
 
-   # Daily updates
-   python src/machine_learning/pipeline/daily_update.py
+   # Daily updates (continuous learning)
+   python src/machine_learning/pipeline/pipeline_runner.py
    ```
 
 ## Architecture
@@ -121,7 +140,9 @@ unit.
 ## Features
 
 - **Continuous Learning**: Daily incremental model updates with performance validation
+- **Model Comparison**: Systematic version comparison for monthly retraining decisions
 - **Robust Pipeline**: Metadata tracking, automated backups, and rollback mechanisms
+- **Validation System**: Integrated model and forecast validation with fallback handling
 - **Production Ready**: Comprehensive error handling and logging
 - **Web Interface**: Interactive dashboard with real-time data visualization
 - **Scalable Architecture**: Batch processing with memory management
