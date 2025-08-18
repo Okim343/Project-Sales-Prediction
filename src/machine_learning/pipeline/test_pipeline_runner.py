@@ -57,6 +57,19 @@ from pipeline.integrated_validator import (
     validate_monthly_retraining_results,
 )
 
+# Import logging utilities for cleaner, more readable logging
+from pipeline.logging_utils import (
+    log_pipeline_start,
+    log_data_info,
+    log_model_operations,
+    log_rollback_summary,
+    log_validation_summary,
+    log_pipeline_completion,
+    log_memory_usage,
+    log_batch_progress,
+    log_database_operation,
+)
+
 # Configure plotting backend
 pd.options.plotting.backend = "matplotlib"
 
@@ -306,45 +319,42 @@ def run_daily_mode():
     }
 
     try:
-        logger.info("=== DAILY MODE PIPELINE STARTED (TEST VERSION) ===")
+        log_pipeline_start("daily", logger, "test")
 
-        # Create metadata table if it doesn't exist
-        logger.info("Initializing metadata tracking...")
+        # Initialize infrastructure
+        logger.debug("Initializing metadata tracking...")
         if not create_metadata_table():
             logger.warning(
                 "Failed to create metadata table, continuing without metadata tracking"
             )
 
-        # Test database connection
         if not db_manager.test_connection():
             error_message = "Database connection failed"
             logger.error(error_message)
             return
 
-        # Step 1: Check last successful run date from metadata
-        logger.info("Step 1: Checking last successful run date...")
+        # Determine incremental update baseline
         last_run = get_last_successful_run(run_type="daily")
 
         if last_run:
             since_date = last_run["run_timestamp"].date()
-            logger.info(f"Last successful daily run: {since_date}")
+            logger.info(f"Test incremental update since last daily run: {since_date}")
         else:
             # If no previous daily runs, look for any successful run as fallback
             last_run = get_last_successful_run()
             if last_run:
                 since_date = last_run["run_timestamp"].date()
                 logger.info(
-                    f"No daily runs found, using last successful run: {since_date}"
+                    f"No daily runs found, test updating since last run: {since_date}"
                 )
             else:
                 # Default to 7 days ago if no runs found
                 since_date = (datetime.now() - timedelta(days=7)).date()
                 logger.info(
-                    f"No previous runs found, defaulting to 7 days ago: {since_date}"
+                    f"No previous runs found, test updating from 7 days ago: {since_date}"
                 )
 
-        # Step 2: Import data since that date
-        logger.info(f"Step 2: Importing data since {since_date}...")
+        # Import incremental data for testing
         try:
             new_data = import_data_from_sql_since_date(
                 user=DatabaseConfig.USER,
@@ -356,18 +366,20 @@ def run_daily_mode():
                 since_date=str(since_date),
             )
             records_processed = len(new_data)
-            logger.info(
-                f"Imported {records_processed:,} new records since {since_date}"
+            log_data_info(
+                records_processed,
+                logger,
+                operation="imported for test since " + str(since_date),
             )
         except Exception as e:
             error_message = f"Failed to import data since {since_date}: {e}"
             logger.error(error_message)
             raise
 
-        # Step 3: If no new data, log and exit gracefully
+        # Check if incremental test update is needed
         if new_data.empty:
             logger.info(
-                f"No new data found since {since_date}. Pipeline completed with no updates."
+                f"No new data since {since_date} - test pipeline completed with no updates"
             )
             # Log successful but no-op run
             end_time = time.time()
@@ -381,8 +393,7 @@ def run_daily_mode():
             )
             return
 
-        # Step 4: Load existing models
-        logger.info("Step 4: Loading existing models...")
+        # Load existing test models for incremental updates
         models_file = AppConfig.MLB_REGRESSORS_FILE.parent / "test_mlb_regressors.pkl"
         if not models_file.exists():
             error_message = f"No existing test models found at {models_file}. Run full test training first."
@@ -391,54 +402,43 @@ def run_daily_mode():
 
         try:
             original_models = load_models(models_file)
-            logger.info(f"Loaded {len(original_models)} existing test models")
+            log_model_operations("loaded for test", len(original_models), logger)
         except Exception as e:
             error_message = f"Failed to load existing test models: {e}"
             logger.error(error_message)
             raise
 
-        # Step 4.5: Backup existing models before updating
-        logger.info("Step 4.5: Backing up existing models...")
+        # Backup existing test models before incremental updates
         try:
             archive_dir = models_file.parent / "archive"
             archive_models(models_file, archive_dir)
-            logger.info(f"Test models backed up to {archive_dir}")
+            logger.debug(f"Test models backed up to {archive_dir}")
         except Exception as e:
             logger.warning(
                 f"Failed to backup test models: {e}. Continuing with updates..."
             )
 
-        # Process and clean the new data
-        logger.info("Processing and cleaning new data...")
+        # Process new data for test model updates
+        logger.debug("Processing and cleaning new data...")
         clean_data = process_sales_data(new_data)
         feature_data = create_time_series_features(clean_data)
-
-        # Calculate historical stats for forecast validation
-        logger.info("Calculating historical statistics for validation...")
         historical_stats = calculate_historical_stats(feature_data)
 
-        # Get date range info for logging
+        # Log processed test data info
         date_info = get_date_range_info(feature_data)
         if date_info["min_date"] and date_info["max_date"]:
-            logger.info(
-                f"New data spans from {date_info['min_date']} to {date_info['max_date']} "
-                f"({date_info['date_span_days']} days, {date_info['record_count']:,} records)"
+            log_data_info(
+                date_info["record_count"], logger, date_info, "processed for test"
             )
 
-        # Step 5: Process each MLB with validation and rollback mechanism (LIMITED FOR TESTING)
-        logger.info(
-            f"Step 5: Processing MLBs with incremental updates and validation (limited to {MAX_MLBS_FOR_TESTING} MLBs)..."
-        )
-
-        # Get MLBs that have new data and existing models
+        # Process MLBs with incremental updates and validation (limited for testing)
         mlbs_with_new_data = set(feature_data["mlb"].unique())
         mlbs_with_models = set(original_models.keys())
         mlbs_to_update = mlbs_with_new_data.intersection(mlbs_with_models)
 
-        logger.info(f"Found {len(mlbs_with_new_data)} MLBs with new data")
-        logger.info(f"Found {len(mlbs_with_models)} MLBs with existing models")
         logger.info(
-            f"Will update {min(len(mlbs_to_update), MAX_MLBS_FOR_TESTING)} MLBs (limited for testing)"
+            f"Test MLBs for incremental update: {min(len(mlbs_to_update), MAX_MLBS_FOR_TESTING)} "
+            f"(from {len(mlbs_with_new_data)} with new data, {len(mlbs_with_models)} with models, limited to {MAX_MLBS_FOR_TESTING})"
         )
 
         updated_models = {}
@@ -453,9 +453,13 @@ def run_daily_mode():
 
         for i in range(0, len(mlb_list), batch_size):
             batch_mlbs = mlb_list[i : i + batch_size]
-            logger.info(
-                f"Processing test batch {i//batch_size + 1}: MLBs {i+1}-{min(i+batch_size, len(mlb_list))} of {len(mlb_list)}"
+            batch_num = i // batch_size + 1
+            total_batches = (len(mlb_list) + batch_size - 1) // batch_size
+            items_range = (
+                f"MLBs {i+1}-{min(i+batch_size, len(mlb_list))} of {len(mlb_list)}"
             )
+
+            log_batch_progress(batch_num, total_batches, items_range, logger, "test")
 
             batch_results = process_mlb_batch_with_validation_limited(
                 batch_mlbs, original_models, feature_data, rollback_stats
@@ -466,24 +470,15 @@ def run_daily_mode():
 
             # Memory cleanup after each batch
             gc.collect()
-            logger.debug(f"Completed test batch {i//batch_size + 1}, memory cleaned up")
 
         models_updated = len(updated_models)
 
-        # Log rollback statistics
-        logger.info("=== ROLLBACK STATISTICS (TEST MODE) ===")
-        logger.info(f"Total MLBs processed: {rollback_stats['total_processed']}")
-        logger.info(f"Models improved: {rollback_stats['models_improved']}")
-        logger.info(f"Models maintained: {rollback_stats['models_maintained']}")
-        logger.info(f"Models rolled back: {rollback_stats['models_rolled_back']}")
-        logger.info(f"MLBs failed: {rollback_stats['mlbs_failed']}")
-        logger.info(f"Final models saved: {models_updated}")
+        # Log test processing results
+        log_rollback_summary(rollback_stats, logger, "test mode")
 
-        # Step 5.5: Integrated final validation (test mode - replaces separate model and forecast validation)
+        # Final validation of updated test models and forecasts
         if updated_models or final_forecasts:
-            logger.info(
-                "Step 5.5: Performing integrated final validation (test mode)..."
-            )
+            logger.info("Performing final validation (test mode)...")
             try:
                 # Create validation context for final check
                 context = ValidationContext(
@@ -495,21 +490,13 @@ def run_daily_mode():
                     validate_final_results(updated_models, final_forecasts, context)
                 )
 
-                # Log validation results
-                if validation_issues:
-                    logger.warning(
-                        f"Final validation found {len(validation_issues)} issues (test mode):"
-                    )
-                    for issue in validation_issues[:10]:  # Log first 10 issues
-                        logger.warning(f"  - {issue}")
-                    if len(validation_issues) > 10:
-                        logger.warning(
-                            f"  ... and {len(validation_issues) - 10} more issues"
-                        )
-                else:
-                    logger.info(
-                        "All models and forecasts passed final validation (test mode)"
-                    )
+                # Log validation results using utility function
+                log_validation_summary(
+                    validation_issues,
+                    len(updated_models),
+                    logger,
+                    "test final validation",
+                )
 
                 # Use validated results
                 updated_models = validated_models
@@ -517,59 +504,52 @@ def run_daily_mode():
 
                 # Monitor memory usage during validation
                 memory_stats = monitor_memory_usage_during_validation()
-                logger.info(
-                    f"Memory usage during validation: {memory_stats['rss_mb']:.1f} MB RSS, "
-                    f"{memory_stats['percent']:.1f}% of system memory"
-                )
+                log_memory_usage(memory_stats, logger, "test validation")
 
-                logger.info(
-                    f"Integrated validation completed (test mode): {len(validated_models)} models, "
+                logger.debug(
+                    f"Test validation completed: {len(validated_models)} models, "
                     f"{len(validated_forecasts)} forecasts validated"
                 )
 
             except Exception as e:
-                logger.error(f"Integrated final validation failed (test mode): {e}")
+                logger.error(f"Test final validation failed: {e}")
                 logger.warning("Proceeding with pre-validation results...")
 
-        # Step 6: Save forecasts to SQL (SKIP IN TEST MODE)
+        # Save forecasts to database (skipped in test mode)
         if final_forecasts:
-            logger.info(
-                f"Step 6: Would save {len(final_forecasts)} forecasts to SQL (SKIPPED in test mode)"
+            log_database_operation(
+                "test forecasts", len(final_forecasts), logger, "skipped", "test mode"
             )
         else:
-            logger.info(
-                "No forecasts to save (no models were updated successfully or all failed validation)"
+            log_database_operation(
+                "test forecast save",
+                0,
+                logger,
+                "skipped",
+                "no models were updated successfully or all failed validation",
             )
 
-        # Step 7: Save updated models (only models that improved or maintained performance)
+        # Save updated test models
         if updated_models:
-            logger.info(f"Step 7: Saving {len(updated_models)} updated test models...")
             try:
                 save_models(updated_models, models_file)
-                logger.info(
-                    f"Saved {len(updated_models)} updated test models to {models_file}"
-                )
+                log_model_operations("saved for test", len(updated_models), logger)
             except Exception as e:
                 logger.error(f"Failed to save updated test models: {e}")
                 raise
         else:
             logger.info(
-                "No updated models to save (all models were rolled back or failed)"
+                "No updated test models to save (all models were rolled back or failed)"
             )
 
-        logger.info("Daily mode test pipeline - MLB processing completed successfully")
-
-        # Step 8: Log metadata including rollback statistics
+        # Test pipeline completion
         end_time = time.time()
         execution_time = end_time - start_time
 
-        logger.info("DAILY MODE TEST PIPELINE COMPLETED SUCCESSFULLY!")
-        logger.info(f"Execution time: {execution_time:.1f} seconds")
-        logger.info(f"Records processed: {records_processed:,}")
-        logger.info(f"Models updated: {models_updated}")
-        logger.info(
-            f"Success rate: {(models_updated / max(rollback_stats['total_processed'], 1) * 100):.1f}%"
-        )
+        pipeline_metrics = {
+            "records_processed": records_processed,
+            "models_updated": models_updated,
+        }
 
         # Determine overall status based on results
         if models_updated == 0:
@@ -603,7 +583,12 @@ def run_daily_mode():
             if error_details:
                 error_message = "; ".join(error_details)
 
-        # Log pipeline run with enhanced metadata
+        # Log completion and save metadata
+        pipeline_metrics["error_message"] = error_message
+        log_pipeline_completion(
+            final_status, execution_time, pipeline_metrics, logger, "daily", "test"
+        )
+
         log_pipeline_run(
             run_type=run_type,
             status=final_status,
@@ -612,10 +597,6 @@ def run_daily_mode():
             error_message=error_message,
             run_duration_seconds=execution_time,
         )
-
-        logger.info(f"Test pipeline completed with status: {final_status}")
-        if error_message:
-            logger.warning(f"Issues encountered: {error_message}")
 
     except Exception as e:
         error_message = str(e)
@@ -648,36 +629,39 @@ def run_full_mode():
     use_incremental = False
 
     try:
-        logger.info("=== FULL MODE PIPELINE STARTED (TEST VERSION) ===")
+        log_pipeline_start("full", logger, "test")
 
-        # Create metadata table if it doesn't exist
-        logger.info("Initializing metadata tracking...")
+        # Initialize infrastructure
+        logger.debug("Initializing metadata tracking...")
         if not create_metadata_table():
             logger.warning(
                 "Failed to create metadata table, continuing without metadata tracking"
             )
 
-        # Test database connection
         if not db_manager.test_connection():
             error_message = "Database connection failed"
             logger.error(error_message)
             return
 
-        # Check if existing models are available for incremental training
+        # Check for existing test models to determine training approach
         existing_models = {}
         models_file = AppConfig.MLB_REGRESSORS_FILE.parent / "test_mlb_regressors.pkl"
         if models_file.exists():
             try:
-                logger.info(f"Loading existing test models from {models_file}")
                 existing_models = load_models(models_file)
-                logger.info(f"Loaded {len(existing_models)} existing test models")
+                log_model_operations(
+                    "loaded for test fallback",
+                    len(existing_models),
+                    logger,
+                    level="debug",
+                )
                 use_incremental = True
             except Exception as e:
                 logger.warning(f"Failed to load existing test models: {e}")
-                logger.info("Proceeding with full training instead")
+                logger.info("Proceeding with full test training instead")
                 use_incremental = False
         else:
-            logger.info("No existing test models found, will perform full training")
+            logger.info("No existing test models found - performing full test training")
             use_incremental = False
 
         # Import data from SQL
