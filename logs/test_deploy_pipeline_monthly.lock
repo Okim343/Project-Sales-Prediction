@@ -1,1 +1,1 @@
-{"pid": 11831, "start_time": 1756289029.318961, "command": "src/machine_learning/test_deploy_pipeline.py --mode=monthly"}
+{"pid": 17678, "start_time": 1756291747.1118069, "command": "src/machine_learning/test_deploy_pipeline.py --mode=monthly"}
