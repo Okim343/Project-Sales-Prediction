@@ -10,6 +10,7 @@ dependencies:
   - ipykernel
   - jupyterlab
   - pre-commit
+  - python-dotenv
 
   # Language agnostic template project dependencies
   - pytask >=0.5.0

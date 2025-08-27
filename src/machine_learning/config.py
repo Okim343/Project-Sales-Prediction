@@ -9,6 +9,21 @@ from typing import Optional
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 
+# Load environment variables from .env file if available
+try:
+    from dotenv import load_dotenv
+
+    # Load .env file from project root
+    env_file = Path(__file__).parent.parent.parent / ".env"
+    if env_file.exists():
+        load_dotenv(env_file)
+    else:
+        # Try loading from current directory as fallback
+        load_dotenv()
+except ImportError:
+    # python-dotenv not installed, continue without it
+    pass
+
 # Environment variables are loaded from the system environment
 # You can set these in your shell or system environment:
 # export DB_USER=postgres
