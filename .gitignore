@@ -41,9 +41,9 @@ xgboost-guide-python/
 # directories
 Data_Thiago
 
-# Claude
+# Codex
 .claude/
-CLAUDE.md
+AGENTS.md
 continuous-learning-implementation.md
 xgboost-incremental-learning-notes.md
 suggestions-for-later.md
