@@ -1,0 +1,56 @@
+PROPRIETARY SOFTWARE LICENSE — LIMITED USE
+
+Copyright (c) 2025-2026 Enrico Truzzi. All rights reserved.
+
+This software, including its source code, models, documentation, configuration,
+and any associated files (the "Software"), is the proprietary and confidential
+property of Enrico Truzzi (the "Owner").
+
+1. NO GRANT OF RIGHTS
+   Except as expressly permitted in Section 2, no license or right is granted,
+   by implication, estoppel, or otherwise, to use, copy, modify, merge, publish,
+   distribute, sublicense, sell, or create derivative works of the Software.
+
+2. PERMITTED VIEWING
+   Where the Software is made visible to you (for example, through a public or
+   shared code repository), you may view and read the source code solely for
+   personal evaluation or reference. This permission does not extend to running
+   the Software, deploying it, or incorporating any part of it into another work.
+
+3. AUTHORIZED USE
+   Any other use, including execution in production or non-production
+   environments, commercial use, or use on behalf of any third party, requires
+   prior written permission from the Owner. Such permission may be limited in
+   scope, duration, or purpose and may be revoked at any time.
+
+4. RESTRICTIONS
+   You may not:
+   a) redistribute, publish, or disclose the Software, in whole or in part;
+   b) reverse engineer, decompile, or remove any proprietary notices;
+   c) use the Software, or any trained models or outputs derived from it, to
+      build a competing product or service;
+   d) use the Software to train, fine-tune, or benchmark any machine learning
+      system other than as authorized under Section 3.
+
+5. OWNERSHIP
+   The Owner retains all right, title, and interest in and to the Software,
+   including all intellectual property rights. Any modifications made under an
+   authorized use remain subject to this license.
+
+6. TERMINATION
+   Any permission granted under this license terminates automatically if you
+   breach any of its terms. Upon termination you must cease all use of the
+   Software and destroy all copies in your possession or control.
+
+7. DISCLAIMER OF WARRANTY
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+
+8. LIMITATION OF LIABILITY
+   IN NO EVENT SHALL THE OWNER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+   SOFTWARE.
+
+For licensing inquiries, contact the Owner via GitHub: https://github.com/Okim343

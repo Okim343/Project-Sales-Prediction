@@ -1,205 +1,196 @@
-# Sales Forecasting for Mercado Livre
+<div align="center">
 
-## Project Overview
+# 📈 Project Sales Prediction
 
-Sales forecasting application for Mercado Livre powered by XGBoost models trained per
-MLB (listing). The system delivers 90-day forecasts, supports incremental learning with
-automated validation/rollback, and ships with production-ready deployment tooling plus a
-Dash dashboard.
+**Per-listing sales forecasting for Mercado Livre, with continuous learning, automated
+validation, and a live dashboard.**
 
-## Environment Setup
+![Python](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)
+![XGBoost](https://img.shields.io/badge/model-XGBoost-EB5E28)
+![PostgreSQL](https://img.shields.io/badge/data-PostgreSQL-4169E1?logo=postgresql&logoColor=white)
+![Dash](https://img.shields.io/badge/dashboard-Plotly%20Dash-3F4F75?logo=plotly&logoColor=white)
+![License](https://img.shields.io/badge/license-Proprietary-red)
 
-The project uses conda/mamba for environment management:
+[Overview](#-overview) • [Features](#-features) • [Architecture](#-architecture) •
+[Getting started](#-getting-started) • [Usage](#-usage) •
+[Configuration](#%EF%B8%8F-configuration) • [License](#-license)
+
+</div>
+
+______________________________________________________________________
+
+## 🔎 Overview
+
+Project Sales Prediction trains an individual **XGBoost regressor for every active
+Mercado Livre listing (MLB)** and produces a **90-day daily sales forecast** for each
+one.
+
+Sales history is read from PostgreSQL, cleaned, and turned into time-series features
+(calendar effects, lags, rolling means, price). Forecasts are written back to the
+database, where they feed downstream planning and an interactive Dash dashboard.
+
+The system is built to run unattended. It updates models incrementally as new data
+arrives, validates every model and forecast before publishing, rolls back automatically
+when quality degrades, and keeps a full audit trail of every run.
+
+## ✨ Features
+
+|                              |                                                                                                                       |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| 🎯 **Per-listing models**    | One XGBoost model per MLB, capturing listing-specific demand patterns                                                 |
+| 🔭 **90-day horizon**        | Direct multi-step forecasting; horizon configurable via environment variable                                          |
+| 🔁 **Continuous learning**   | Daily incremental updates, full retrains, date-bounded backfills, and monthly sliding-window refreshes                |
+| 🛡️ **Validation & rollback** | Integrated model and forecast checks; models are archived and restored automatically if performance drops             |
+| 🧾 **Run metadata**          | Every run and rollback decision is logged to `public.pipeline_metadata`                                               |
+| 🚀 **Deployment-ready**      | Environment validation, rotating logs, cleanup handling, and cron launchers with meaningful exit codes                |
+| 📊 **Dashboard**             | Dash + Plotly UI with MLB/SKU/date filters, 15-minute caching, and graceful fallback when the database is unavailable |
+| 🧪 **Dry-run mirrors**       | Every entry point has a `test_*` twin limited to a handful of MLBs for fast, safe checks                              |
+
+## 🏗 Architecture
+
+```mermaid
+flowchart LR
+    A[(PostgreSQL<br/>sales view)] --> B[Import &<br/>cleaning]
+    B --> C[Feature<br/>engineering]
+    C --> D[Per-MLB XGBoost<br/>training / update]
+    D --> E{Integrated<br/>validation}
+    E -- pass --> F[90-day<br/>forecasts]
+    E -- fail --> G[Rollback to<br/>archived models]
+    G --> F
+    F --> H[(Forecast table)]
+    F --> I[(Model store<br/>bld/*.pkl)]
+    H --> J[Dash dashboard]
+    D -. run metadata .-> K[(pipeline_metadata)]
+```
+
+### Pipeline modes
+
+| Mode                | What it does                                                                      | Typical schedule |
+| ------------------- | --------------------------------------------------------------------------------- | ---------------- |
+| `daily` *(default)* | Continues training existing models on data since the last successful run          | Every day        |
+| `monthly`           | Retrains on a six-month sliding window and keeps the better of old vs. new models | Monthly          |
+| `full`              | Clean retrain on all history, with automatic fallback to archived models          | On demand        |
+| `--since-date`      | Rebuilds models using data from a given date onward                               | Backfills        |
+
+### Project structure
+
+```text
+Project-Sales-Prediction/
+├── environment.yml                 # Conda environment (fcast_project)
+├── LICENSE
+└── src/
+    ├── machine_learning/
+    │   ├── config.py               # Central configuration (env-driven)
+    │   ├── script_final.py         # Full production refresh
+    │   ├── deploy_pipeline.py      # Hardened deployment entry point
+    │   ├── pipeline/               # Unified runner + integrated validator
+    │   ├── data_management/        # SQL import, cleaning, features, metadata
+    │   ├── estimation/             # Training, forecasting, model storage
+    │   ├── validation/             # Model/forecast validators, model comparison
+    │   ├── deployment/             # Env checks, logging, paths, cleanup
+    │   ├── cron_scripts/           # Cron launchers (prod + test)
+    │   └── notebooks/              # Exploratory analysis
+    └── web_app/
+        └── script_webapp.py        # Dash dashboard
+```
+
+## 🚀 Getting started
+
+### Prerequisites
+
+- [Mamba](https://mamba.readthedocs.io/) or Conda
+- Network access to the PostgreSQL instance holding the sales data
+
+### Installation
 
 ```bash
+git clone https://github.com/Okim343/Project-Sales-Prediction.git
+cd Project-Sales-Prediction
 mamba env create -f environment.yml
 conda activate fcast_project
 pre-commit install
 ```
 
-## Main Scripts
-
-### 1. `script_final.py` - Production Pipeline
-
-Automated production refresh that trains models from scratch and publishes forecasts.
-
-- Imports the latest data from PostgreSQL
-- Cleans data and builds time-series features
-- Trains or updates XGBoost models for every active MLB
-- Generates 90-day forecasts using direct multi-step methodology
-- Saves results to `public.mlb_forecasts_90_days`
-- Logs run metadata and persists models to `bld/mlb_regressors.pkl`
-
-**Run**: `python src/machine_learning/script_final.py`
-
-### 2. `pipeline_runner.py` - Continuous Learning Orchestrator
-
-Unified CLI that powers all continuous learning workflows.
-
-- **Daily mode**: Incremental updates with integrated validation and rollback
-- **Full mode**: Clean retraining with automatic fallback if performance drops
-- **Since-date mode**: Rebuild using data from a specified date onward
-- **Monthly mode**: Six-month sliding-window retraining with model comparison
-- Archives models, logs metadata, and writes validated forecasts back to SQL
-
-**Run**:
+Set your database credentials (or put them in a `.env` file at the project root):
 
 ```bash
-# Daily mode (default)
-python src/machine_learning/pipeline/pipeline_runner.py
-
-# Full mode
-python src/machine_learning/pipeline/pipeline_runner.py --mode=full
-
-# Monthly mode
-python src/machine_learning/pipeline/pipeline_runner.py --mode=monthly
-
-# Since specific date
-python src/machine_learning/pipeline/pipeline_runner.py --since-date=2024-01-15
+export DB_HOST=your_host
+export DB_USER=your_user
+export DB_PASSWORD=your_password
+export DB_NAME=your_database
 ```
 
-### 3. `deploy_pipeline.py` - Deployment Wrapper
+## 🧭 Usage
 
-Production-safe wrapper that prepares the environment, then calls the pipeline runner.
+**Continuous learning pipeline**
 
-- Validates environment variables, paths, and Python interpreter
-- Configures production logging and enriched context metadata
-- Cleans up working directories and returns meaningful exit codes
-- Ideal for cron jobs and VPS deployment
+```bash
+python src/machine_learning/pipeline/pipeline_runner.py                       # daily
+python src/machine_learning/pipeline/pipeline_runner.py --mode=monthly
+python src/machine_learning/pipeline/pipeline_runner.py --mode=full
+python src/machine_learning/pipeline/pipeline_runner.py --since-date=2025-01-15
+```
 
-**Run**:
+**Production deployment** (environment checks, rotating logs, safe cleanup)
 
 ```bash
 python src/machine_learning/deploy_pipeline.py --mode=daily
-python src/machine_learning/deploy_pipeline.py --mode=full
-python src/machine_learning/deploy_pipeline.py --mode=monthly
-python src/machine_learning/deploy_pipeline.py --since-date=2024-01-15
 ```
 
-### 4. `script_webapp.py` - Web Dashboard
+**Scheduling with cron**
 
-Dash-based dashboard available at http://127.0.0.1:8050.
+```cron
+0 3 * * *  bash /path/to/Project-Sales-Prediction/src/machine_learning/cron_scripts/daily_cron.sh
+0 4 1 * *  bash /path/to/Project-Sales-Prediction/src/machine_learning/cron_scripts/monthly_cron.sh
+```
 
-- Cached database reads with 15-minute TTL to cut down load
-- Filters by MLB, SKU, and date range with Plotly visualizations
-- Graceful fallback to cached data when the database is unavailable
-- Includes lightweight session handling scaffolding
-
-**Run**: `python src/web_app/script_webapp.py`
-
-> Tip: For cron scheduling use the wrappers in `src/machine_learning/cron_scripts/`.
-
-## Configuration
-
-### Environment Variables
+**Full production refresh**
 
 ```bash
-export FORECAST_DAYS_LONG=120  # Change forecast duration (default: 90)
-export DB_HOST=your_host
-export DB_PASSWORD=your_password
-export DB_USER=your_username
-export DB_NAME=your_database
-export DB_VIEW=public.view_enrico
-export DB_FORECAST_TABLE=public.mlb_forecasts_90_days
+python src/machine_learning/script_final.py
 ```
 
-### Configuration Files
+**Dashboard** at <http://127.0.0.1:8050>
 
-- `src/machine_learning/config.py` - Main app configuration
-- `src/machine_learning/estimation/model.py` - XGBoost parameters
-- `src/machine_learning/estimation/model_storage.py` - Model persistence helpers
-- `src/machine_learning/data_management/metadata_tracker.py` - Pipeline run logging
-- `src/machine_learning/deployment/` - Production logging, environment validation,
-  cleanup utilities
+```bash
+python src/web_app/script_webapp.py
+```
 
-## Data Flow
+> [!TIP]
+> Each entry point has a `test_*` counterpart (for example
+> `pipeline/test_pipeline_runner.py` or `cron_scripts/test_daily_cron.sh`) that runs the
+> same logic on a small subset of MLBs and writes to a separate test table.
 
-1. **Data Import**: PostgreSQL (`public.view_enrico`) → Raw sales data
-1. **Processing**: Cleaning, feature engineering, metadata logging
-1. **Training**: XGBoost models per MLB with optional incremental continuation
-1. **Validation**: Forecast sanity checks, model comparison, rollback handling
-1. **Forecasting**: Multi-step direct 90-day forecasts
-1. **Storage**: Database (`public.mlb_forecasts_90_days`) + local serialized models
-1. **Visualization**: Dash dashboard and saved artifacts
+## ⚙️ Configuration
 
-## Key Files
+All settings live in [`src/machine_learning/config.py`](src/machine_learning/config.py)
+and can be overridden through environment variables.
 
-- **Config**: `src/machine_learning/config.py`
-- **Models**: `bld/mlb_regressors.pkl`
-- **Forecasts**: `bld/mlb_forecast.pkl`
-- **Data**: `data/raw_sql.csv`
-- **Pipeline**: `src/machine_learning/pipeline/pipeline_runner.py`
-- **Deployment**: `src/machine_learning/deploy_pipeline.py`
-- **Validation Suite**: `src/machine_learning/pipeline/integrated_validator.py`,
-  `src/machine_learning/validation/`
-- **Cron Scripts**: `src/machine_learning/cron_scripts/*.sh`
+| Variable                    | Default                        | Description                                           |
+| --------------------------- | ------------------------------ | ----------------------------------------------------- |
+| `DB_HOST` / `DB_PORT`       | — / `5432`                     | PostgreSQL host and port                              |
+| `DB_USER` / `DB_PASSWORD`   | —                              | Database credentials                                  |
+| `DB_NAME`                   | `Mercado Livre`                | Database name                                         |
+| `DB_VIEW`                   | `public.view_enrico`           | Input sales view                                      |
+| `DB_FORECAST_TABLE`         | `public.mlb_forecasts_90_days` | Forecast output table                                 |
+| `FORECAST_DAYS_LONG`        | `90`                           | Production forecast horizon (days)                    |
+| `FORECAST_DAYS`             | `30`                           | Short horizon used by legacy/test helpers             |
+| `ACTIVE_MLB_DAYS_THRESHOLD` | `30`                           | Days of recent activity for an MLB to count as active |
+| `TEST_MLB_COUNT`            | `5`                            | Number of MLBs used by `test_*` scripts               |
 
-## Database
+XGBoost hyperparameters are defined in
+[`src/machine_learning/estimation/model.py`](src/machine_learning/estimation/model.py).
 
-- **Host**: 172.27.40.210:5432
-- **Database**: "Mercado Livre"
-- **Input**: `public.view_enrico`
-- **Forecast Output**: `public.mlb_forecasts_90_days` (override via `DB_FORECAST_TABLE`)
-- **Metadata Table**: `public.pipeline_metadata` (auto-managed)
+## 🗺 Roadmap
 
-## Quick Start
+- [ ] Alerting for data freshness, pipeline failures, and forecast anomalies
+- [ ] Automated feature-drift tracking for incremental runs
+- [ ] Faster, leaner incremental training for large MLB sets
 
-1. **Setup**:
+## 📄 License
 
-   ```bash
-   mamba env create -f environment.yml
-   conda activate fcast_project
-   export DB_PASSWORD=your_password
-   ```
+**Proprietary — all rights reserved.** © 2025–2026 Enrico Truzzi.
 
-1. **Run**:
-
-   ```bash
-   # Production full refresh
-   python src/machine_learning/script_final.py
-
-   # Daily continuous learning
-   python src/machine_learning/pipeline/pipeline_runner.py
-
-   # Production-safe execution (cron/VPS)
-   python src/machine_learning/deploy_pipeline.py --mode=daily
-
-   # Web dashboard
-   python src/web_app/script_webapp.py
-   ```
-
-## Architecture
-
-**MLB-Centric Design**: Each MLB gets its own XGBoost regressor backed by direct
-multi-step forecasting.
-
-- **Incremental Learning**: Daily mode continues training existing models with
-  validation + rollback
-- **Monthly Refresh**: Six-month sliding window retraining with model comparison
-- **Integrated Validation**: Forecast and model checks guard against regressions
-- **Metadata & Archiving**: Every run logged; models archived before risky updates
-- **Deployment Wrapper**: Dedicated tooling separates ML logic from ops concerns
-
-## Features
-
-- **Integrated Validation & Rollback**: Automated checks on models and forecasts with
-  safe fallback
-- **Incremental Model Updates**: Daily mode supports continuation training with
-  statistical guards
-- **Model Archiving & Metadata**: Persistent run history plus timestamped model backups
-- **Deployment-Ready Execution**: Environment validation, logging, cron scripts, and
-  graceful cleanup
-- **Dash Dashboard**: Cached data access, MLB/SKU filters, Plotly visuals, login
-  scaffolding
-- **Robust Logging**: Consistent logging across pipeline, deployment, and web layers
-- **Configurable Horizons**: Forecast horizon adjustable through environment variables
-  or config
-
-## Future Fixes
-
-- **Production Monitoring**: Add alerting for data freshness, pipeline failures, and
-  forecast anomalies
-- **Data Drift Tracking**: Automate feature drift metrics and dashboards for incremental
-  runs
-- **Performance Tuning**: Further optimize incremental training time and memory usage
-  for large MLB sets
+This repository is not open source. Viewing the code does not grant permission to run,
+copy, modify, or distribute it. Any use requires prior written permission from the
+author. See [`LICENSE`](LICENSE) for the full terms.
