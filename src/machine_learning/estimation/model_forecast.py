@@ -16,7 +16,10 @@ from sklearn.multioutput import MultiOutputRegressor
 
 
 def forecast_future_sales_direct(
-    data: pd.DataFrame, forecast_days: int, lookback_months: Optional[int] = None
+    data: pd.DataFrame,
+    forecast_days: int,
+    lookback_months: Optional[int] = None,
+    as_of_date: Optional[pd.Timestamp] = None,
 ) -> tuple[dict, dict]:
     """
     For each MLB in the data, perform a train/test split as usual,
@@ -29,6 +32,9 @@ def forecast_future_sales_direct(
         forecast_days (int): Number of days into the future to forecast.
         lookback_months (Optional[int]): If specified, only use data from the last N months for training.
                                         If None, use all available data. Used for sliding window retraining.
+        as_of_date (Optional[pd.Timestamp]): Date treated as "today" for the activity filter,
+                                        lookback window, and forecast start. If None, uses the
+                                        current date. Set to a past cutoff for backtesting.
 
     Returns:
         tuple[dict, dict]: Tuple containing:
@@ -39,6 +45,11 @@ def forecast_future_sales_direct(
     mlb_forecasts = {}
     mlb_models = {}
     FEATURES = ["day_of_week", "day_of_month", "rolling_mean_3", "lag_1"]
+    reference_date = (
+        pd.Timestamp(as_of_date).normalize()
+        if as_of_date is not None
+        else pd.Timestamp.now().normalize()
+    )
 
     # Debug logging: track filtering statistics
     total_mlbs = len(data["mlb"].unique())
@@ -55,7 +66,7 @@ def forecast_future_sales_direct(
 
     if all_dates is not None:
         global_max = all_dates.max()
-        today = pd.Timestamp.now().normalize()
+        today = reference_date
         days_old = (today - global_max).days
         logger.info(
             f"Processing data from {all_dates.min().date()} to {global_max.date()} ({days_old} days old)"
@@ -69,9 +80,7 @@ def forecast_future_sales_direct(
 
         # Apply lookback_months filter if specified (for sliding window retraining)
         if lookback_months is not None:
-            cutoff_date = pd.Timestamp.now().normalize() - pd.DateOffset(
-                months=lookback_months
-            )
+            cutoff_date = reference_date - pd.DateOffset(months=lookback_months)
             original_length = len(mlb_data)
             mlb_data = mlb_data[mlb_data.index >= cutoff_date]
             if len(mlb_data) < original_length:
@@ -87,7 +96,7 @@ def forecast_future_sales_direct(
         last_date = mlb_data.index.max()
 
         # Skip MLBs with no recent data (inactive products)
-        today = pd.Timestamp.now().normalize()
+        today = reference_date
         cutoff_date = today - pd.Timedelta(days=AppConfig.ACTIVE_MLB_DAYS_THRESHOLD)
 
         if last_date < cutoff_date:
@@ -159,7 +168,7 @@ def forecast_future_sales_direct(
 
         # Build forecast DataFrame with future dates starting from tomorrow
         # Use current date instead of last_date to ensure predictions are always for the future
-        today = pd.Timestamp.now().normalize()
+        today = reference_date
         future_start = today + pd.Timedelta(days=1)
         future_dates = pd.date_range(
             start=future_start, periods=forecast_days, freq="D"
