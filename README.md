@@ -89,6 +89,7 @@ Project-Sales-Prediction/
     │   ├── validation/             # Model/forecast validators, model comparison
     │   ├── deployment/             # Env checks, logging, paths, cleanup
     │   ├── cron_scripts/           # Cron launchers (prod + test)
+    │   ├── backtesting/            # Synthetic data generator + rolling-origin backtest
     │   └── notebooks/              # Exploratory analysis
     └── web_app/
         └── script_webapp.py        # Dash dashboard
@@ -160,6 +161,43 @@ python src/web_app/script_webapp.py
 > Each entry point has a `test_*` counterpart (for example
 > `pipeline/test_pipeline_runner.py` or `cron_scripts/test_daily_cron.sh`) that runs the
 > same logic on a small subset of MLBs and writes to a separate test table.
+
+## 📏 Backtesting
+
+`src/machine_learning/backtesting/` scores the production model against simple baselines
+with a rolling-origin backtest. For each cutoff, every model sees only data up to that
+date and is scored on the next 90 days. Results are averaged over 4 cutoffs, 30 days
+apart.
+
+It runs on two sources:
+
+- **Historical export**: `data/raw_sql.csv` (git-ignored; SKU-level, Dec 2023 – Mar
+  2025).
+- **Synthetic data**: generated to match the production view's columns and calibrated to
+  the historical export. It has weekday pattern, growth, yearly seasonality, Black
+  Friday and Christmas, price discounts, stockouts, and staggered launches. The planted
+  parameters and true pre-stockout demand are saved as ground truth.
+
+```bash
+cd src/machine_learning
+python backtesting/synthetic_data.py                        # (re)generate data/synthetic_orders.csv
+python backtesting/run_backtest.py --source both            # full run, about 6 minutes
+python backtesting/run_backtest.py --source real --skip-current   # baselines only, seconds
+python -m pytest backtesting -q
+```
+
+Results land in `bld/backtest/<source>_<timestamp>/` (`summary.md`, `scores.csv`,
+`forecasts.parquet`).
+
+| Metric | Meaning                                                                                             |
+| ------ | --------------------------------------------------------------------------------------------------- |
+| WAPE   | Total absolute error / total units sold. The headline number; lower is better.                      |
+| MASE   | Error relative to a 7-day seasonal naive forecast on the training data; below 1 beats it in-sample. |
+| Bias   | Total error / total units sold. Positive means over-forecasting.                                    |
+
+Baselines: `seasonal_naive_7` (repeat last week), `weekday_mean_4w` (mean of the same
+weekday over the last 4 weeks), `moving_average_28` (flat 28-day mean). A new model
+should beat all three before it replaces the production one.
 
 ## ⚙️ Configuration
 
