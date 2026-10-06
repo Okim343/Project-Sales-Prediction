@@ -13,6 +13,7 @@ from typing import Union
 
 import pandas as pd
 
+from config import AppConfig
 from data_management.clean_sql_data import process_sales_data
 from data_management.feature_creation import create_time_series_features
 
@@ -58,6 +59,19 @@ def build_training_features(orders: pd.DataFrame, cutoff: pd.Timestamp) -> pd.Da
     if features.index.max() > cutoff:
         raise ValueError("Training features contain dates after the cutoff")
     return features
+
+
+def eligible_series(
+    features: pd.DataFrame, cutoff: pd.Timestamp, horizon: int
+) -> list[str]:
+    """Series the production pipeline would forecast at this cutoff."""
+    activity_cutoff = cutoff - pd.Timedelta(days=AppConfig.ACTIVE_MLB_DAYS_THRESHOLD)
+    stats = features.groupby("mlb").apply(
+        lambda frame: pd.Series({"last": frame.index.max(), "rows": len(frame)}),
+        include_groups=False,
+    )
+    keep = (stats["last"] >= activity_cutoff) & (stats["rows"] >= horizon + 15)
+    return stats.index[keep].tolist()
 
 
 def build_actuals_grid(orders: pd.DataFrame) -> pd.DataFrame:

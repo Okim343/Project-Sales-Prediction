@@ -6,7 +6,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from backtesting.data_prep import build_actuals_grid, load_orders
+from backtesting.data_prep import (
+    build_actuals_grid,
+    build_training_features,
+    eligible_series,
+    load_orders,
+)
 from backtesting.lightgbm_model import (
     LGBM_VARIANTS,
     LGBMConfig,
@@ -111,6 +116,27 @@ def test_inner_window_and_calibration_bounds(orders, monkeypatch):
     assert all(s.index.equals(expected) and (s >= 0).all() for s in forecasts.values())
 
 
+def test_validation_uses_eligibility_at_inner_origin(orders, monkeypatch):
+    horizon = 45
+    inner_cutoff = CUTOFF - pd.Timedelta(days=horizon)
+    inner_features = build_training_features(orders, inner_cutoff)
+    inner_eligible = eligible_series(inner_features, inner_cutoff, horizon)
+    departed = inner_eligible[0]
+    changed = orders[~((orders.mlb == departed) & (orders.date > inner_cutoff))]
+    outer_features = build_training_features(changed, CUTOFF)
+    assert departed not in eligible_series(outer_features, CUTOFF, horizon)
+
+    def cheap_inner(self, config, rows):
+        return np.zeros((len(rows), self.horizon))
+
+    monkeypatch.setattr(LightGBMFold, "_forecast_direct", cheap_inner)
+    fold = LightGBMFold(changed, CUTOFF, horizon)
+    rows, _, actual, _ = fold._validation_forecast(replace(LGBMConfig(), **FAST))
+    assert fold.validation_series == inner_eligible
+    assert departed in fold.validation_series
+    assert len(rows) == len(actual) == len(inner_eligible)
+
+
 @pytest.mark.parametrize(
     "strategy,target_scale",
     [("direct", 0), ("recursive", 0), ("direct", 28), ("direct", 91)],
@@ -192,7 +218,8 @@ def test_calendar_marks_black_friday_and_brazilian_holidays():
 
 
 def test_resolve_models_expands_groups_and_patterns():
-    assert LGBM_VARIANTS["lgbm_direct"].calibration == "block_tier"
+    assert LGBM_VARIANTS["lgbm_direct"].calibration == "none"
+    assert LGBM_VARIANTS["lgbm_direct_cal_shrunk"].calibration == "block_tier"
     assert LGBM_VARIANTS["lgbm_direct_uncalibrated"].calibration == "none"
     assert resolve_models("baselines")[:3] == [
         "seasonal_naive_7",
@@ -205,17 +232,32 @@ def test_resolve_models_expands_groups_and_patterns():
         resolve_models("no_such_model")
 
 
+def test_fixed_factor_and_blend(orders):
+    fold = LightGBMFold(orders, CUTOFF, HORIZON)
+    mlbs = list(_busiest(orders, 5))
+    direct = fold.forecast(replace(LGBM_VARIANTS["lgbm_direct"], **FAST), mlbs)
+    recursive = fold.forecast(replace(LGBM_VARIANTS["lgbm_recursive"], **FAST), mlbs)
+    fixed = fold.forecast(
+        replace(LGBM_VARIANTS["lgbm_direct_constant_1p10"], **FAST), mlbs
+    )
+    blend = fold.forecast(replace(LGBM_VARIANTS["lgbm_blend_50_50"], **FAST), mlbs)
+    for mlb in mlbs:
+        np.testing.assert_allclose(fixed[mlb], direct[mlb] * 1.10)
+        np.testing.assert_allclose(blend[mlb], 0.5 * (direct[mlb] + recursive[mlb]))
+
+
 def test_run_fold_smoke_with_challengers(orders, monkeypatch):
     """End-to-end fold on a small sample with fast LightGBM variants."""
     fast = {
         name: replace(LGBM_VARIANTS[name], **FAST)
-        for name in ("lgbm_direct", "lgbm_recursive")
+        for name in ("lgbm_direct", "lgbm_recursive", "lgbm_direct_cal_block_tier")
     }
     monkeypatch.setattr("backtesting.run_backtest.LGBM_VARIANTS", fast)
     actuals = build_actuals_grid(orders)
     actuals_by_mlb = {m: f.set_index("date")["y"] for m, f in actuals.groupby("mlb")}
     truth = {m: s * 1.0 for m, s in actuals_by_mlb.items()}
 
+    calibration_log = []
     rows = run_fold(
         orders,
         actuals_by_mlb,
@@ -224,6 +266,7 @@ def test_run_fold_smoke_with_challengers(orders, monkeypatch):
         max_series=5,
         models=["weekday_mean_4w", *fast],
         truth_by_mlb=truth,
+        calibration_log=calibration_log,
     )
 
     assert set(rows["model"]) == {"weekday_mean_4w", *fast}
@@ -232,3 +275,9 @@ def test_run_fold_smoke_with_challengers(orders, monkeypatch):
     assert rows["forecast"].notna().all() and (rows["forecast"] >= 0).all()
     assert rows["h"].between(1, HORIZON).all()
     np.testing.assert_allclose(rows["true_demand"], rows["actual"])
+    assert calibration_log
+    assert all(record["cutoff"] == CUTOFF for record in calibration_log)
+    assert all(
+        record["model"] == "lgbm_direct_cal_block_tier" for record in calibration_log
+    )
+    assert all(np.isfinite(record["applied_factor"]) for record in calibration_log)

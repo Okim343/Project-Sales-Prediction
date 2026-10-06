@@ -36,6 +36,7 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
+from backtesting.data_prep import build_training_features, eligible_series
 from backtesting.folds import horizon_dates
 
 logger = logging.getLogger(__name__)
@@ -53,7 +54,7 @@ AGE_CAP = 180
 class LGBMConfig:
     """Settings for one LightGBM challenger variant."""
 
-    strategy: str = "direct"  # "direct" or "recursive"
+    strategy: str = "direct"  # "direct", "recursive", or "blend"
     feature_groups: Tuple[str, ...] = FEATURE_GROUPS
     use_lag_364: bool = True
     use_series_id: bool = True
@@ -65,7 +66,8 @@ class LGBMConfig:
     weight_power: float = (
         0.0  # Sample weight = (series' 28-day mean at anchor) ** power
     )
-    calibration: str = "none"  # none, overall, block, tier, block_tier, power
+    calibration: str = "none"  # none, overall, block, tier, block_tier, power, constant
+    constant_factor: float = 1.0
     calibration_shrink: float = 1.0  # fraction of validation ratio's move from 1
     calibration_floor: float = 0.8  # minimum applied factor after shrinkage
     target_scale: int = 0  # 0, 28, or 91: fit sales / floored origin level
@@ -387,8 +389,12 @@ class LightGBMFold:
         self._matrices: Dict[str, _Matrices] = {}
         self._training: Dict[tuple, object] = {}
         self._validation: Dict[tuple, tuple] = {}
+        self._inner_eligible: Optional[List[str]] = None
+        self.validation_series: List[str] = []
         self._direct_predictions: Dict[tuple, np.ndarray] = {}
+        self._recursive_predictions: Dict[tuple, np.ndarray] = {}
         self.calibration_factors: Dict[tuple, float] = {}
+        self.calibration_diagnostics: List[dict] = []
         self.selected_power: Optional[float] = None
 
     # -- inputs
@@ -515,12 +521,16 @@ class LightGBMFold:
 
     def forecast(self, config: LGBMConfig, mlbs: List[str]) -> Dict[str, pd.Series]:
         """Forecasts for ``mlbs`` (series without sales by the cutoff are skipped)."""
-        if config.strategy != "direct" and (
+        self.calibration_diagnostics = []
+        self.calibration_factors = {}
+        if config.strategy == "recursive" and (
             config.calibration != "none" or config.target_scale
         ):
             raise ValueError(
                 "Calibration and target scaling require the direct strategy"
             )
+        if config.strategy == "blend" and config.calibration != "none":
+            raise ValueError("The blend does not use calibration")
         if config.target_scale not in (0, 28, 91):
             raise ValueError("target_scale must be 0, 28, or 91")
         if (
@@ -528,10 +538,20 @@ class LightGBMFold:
             or not 0.8 <= config.calibration_floor <= 1.5
         ):
             raise ValueError("Invalid calibration shrinkage or floor")
+        if not np.isfinite(config.constant_factor) or config.constant_factor <= 0:
+            raise ValueError("constant_factor must be finite and positive")
         index = {mlb: i for i, mlb in enumerate(self.panel.mlbs)}
         rows = np.array([index[mlb] for mlb in mlbs if mlb in index], dtype=int)
         if config.strategy == "recursive":
             values = self._forecast_recursive(config, rows)
+        elif config.strategy == "blend":
+            direct = self._forecast_direct(
+                replace(config, strategy="direct", calibration="none"), rows
+            )
+            recursive = self._forecast_recursive(
+                replace(config, strategy="recursive", calibration="none"), rows
+            )
+            values = 0.5 * (direct + recursive)
         elif config.strategy == "direct":
             if config.calibration == "none":
                 values = self._forecast_direct(config, rows)
@@ -546,6 +566,9 @@ class LightGBMFold:
         }
 
     def _forecast_recursive(self, config: LGBMConfig, rows: np.ndarray) -> np.ndarray:
+        key = (config, tuple(rows)) if not config.params else None
+        if key is not None and key in self._recursive_predictions:
+            return self._recursive_predictions[key].copy()
         frame, y = self._recursive_training(config)
         columns = feature_columns(config)
         model = self._fit(config, frame, y, columns)
@@ -574,6 +597,8 @@ class LightGBMFold:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", RuntimeWarning)
                     matrix[rows, t] = np.nanmean(recent, axis=1)
+        if key is not None:
+            self._recursive_predictions[key] = out.copy()
         return out
 
     def _forecast_direct(self, config: LGBMConfig, rows: np.ndarray) -> np.ndarray:
@@ -584,6 +609,7 @@ class LightGBMFold:
                     calibration="none",
                     calibration_shrink=1.0,
                     calibration_floor=0.8,
+                    constant_factor=1.0,
                 ),
                 tuple(rows),
             )
@@ -622,14 +648,18 @@ class LightGBMFold:
             self._direct_predictions[key] = out.copy()
         return out
 
-    def _validation_forecast(self, config: LGBMConfig, rows: np.ndarray):
-        """Fit at c - horizon and score only the observed window ending at c."""
+    def _validation_forecast(self, config: LGBMConfig):
+        """Fit and select series at c - horizon; score their next horizon days."""
         inner_cutoff = self.cutoff - pd.Timedelta(days=self.horizon)
         key = (
             (
-                replace(config, calibration_shrink=1.0, calibration_floor=0.8),
+                replace(
+                    config,
+                    calibration_shrink=1.0,
+                    calibration_floor=0.8,
+                    constant_factor=1.0,
+                ),
                 inner_cutoff,
-                tuple(rows),
             )
             if not config.params
             else None
@@ -637,23 +667,28 @@ class LightGBMFold:
         if key is not None and key in self._validation:
             return self._validation[key]
         inner = LightGBMFold(self.orders, inner_cutoff, self.horizon)
-        names = self.panel.mlbs[rows]
+        if self._inner_eligible is None:
+            features = build_training_features(self.orders, inner_cutoff)
+            self._inner_eligible = eligible_series(features, inner_cutoff, self.horizon)
+        names = self._inner_eligible
+        self.validation_series = names
         inner_index = {name: i for i, name in enumerate(inner.panel.mlbs)}
-        valid = np.array([i for i, name in enumerate(names) if name in inner_index])
-        inner_rows = np.array([inner_index[names[i]] for i in valid], dtype=int)
-        if not len(valid):
+        outer_index = {name: i for i, name in enumerate(self.panel.mlbs)}
+        inner_rows = np.array([inner_index[name] for name in names], dtype=int)
+        outer_rows = np.array([outer_index[name] for name in names], dtype=int)
+        if not len(inner_rows):
             return (
-                valid,
+                inner_rows,
                 np.empty((0, self.horizon)),
                 np.empty((0, self.horizon)),
                 np.array([]),
             )
         pred = inner._forecast_direct(replace(config, calibration="none"), inner_rows)
         dates = horizon_dates(inner_cutoff, self.horizon)
-        actual = self.panel.sales[rows[valid]][:, self.panel.dates.get_indexer(dates)]
+        actual = self.panel.sales[outer_rows][:, self.panel.dates.get_indexer(dates)]
         actual = np.nan_to_num(actual, nan=0.0)
         level = inner.matrices(config.stockout).rmean_28[inner_rows, -1]
-        result = (valid, pred, actual, level)
+        result = (inner_rows, pred, actual, level)
         if key is not None:
             self._validation[key] = result
         return result
@@ -669,20 +704,40 @@ class LightGBMFold:
         return top
 
     def _forecast_calibrated(self, config: LGBMConfig, rows: np.ndarray) -> np.ndarray:
+        self.calibration_factors = {}
+        self.calibration_diagnostics = []
         if config.calibration not in {
             "overall",
             "block",
             "tier",
             "block_tier",
             "power",
+            "constant",
         }:
             raise ValueError(f"Unknown calibration: {config.calibration}")
+        if config.calibration == "constant":
+            factor = config.constant_factor
+            self.calibration_factors[((1, self.horizon), None)] = factor
+            self.calibration_diagnostics.append(
+                {
+                    "block_start": 1,
+                    "block_end": self.horizon,
+                    "tier": "all",
+                    "validation_series": 0,
+                    "validation_actual": np.nan,
+                    "validation_forecast": np.nan,
+                    "raw_factor": factor,
+                    "applied_factor": factor,
+                    "floor_binds": False,
+                }
+            )
+            return self._forecast_direct(config, rows) * factor
         chosen = config
         if config.calibration == "power":
             scored = []
             for power in (1.1, 1.2, 1.3, 1.4, 1.5):
                 candidate = replace(config, tweedie_power=power, calibration="none")
-                _, pred, actual, _ = self._validation_forecast(candidate, rows)
+                _, pred, actual, _ = self._validation_forecast(candidate)
                 total = actual.sum()
                 if total > 0:
                     bias = (pred.sum() - total) / total
@@ -700,10 +755,9 @@ class LightGBMFold:
             return self._forecast_direct(chosen, rows)
 
         valid, pred, actual, level = self._validation_forecast(
-            replace(config, calibration="none"), rows
+            replace(config, calibration="none")
         )
         result = self._forecast_direct(config, rows)
-        self.calibration_factors = {}
         if not len(valid):
             return result
         use_block = config.calibration in {"block", "block_tier"}
@@ -740,6 +794,20 @@ class LightGBMFold:
                     )
                 )
                 self.calibration_factors[(block, tier)] = factor
+                self.calibration_diagnostics.append(
+                    {
+                        "block_start": block[0],
+                        "block_end": min(block[1], self.horizon),
+                        "tier": ("top 20%" if tier else "rest") if use_tier else "all",
+                        "validation_series": int(mask.sum()),
+                        "validation_actual": float(observed),
+                        "validation_forecast": float(forecast),
+                        "raw_factor": raw_factor,
+                        "applied_factor": factor,
+                        "floor_binds": 1 + config.calibration_shrink * (raw_factor - 1)
+                        < config.calibration_floor,
+                    }
+                )
                 selected = (
                     current_tier == tier if use_tier else np.ones(len(rows), dtype=bool)
                 )
@@ -762,12 +830,13 @@ def forecast_lightgbm(
 # Variants ------------------------------------------------------------------------------
 
 UNCALIBRATED_CONFIG = LGBMConfig()
-DEFAULT_CONFIG = replace(
+SHRUNK_CONFIG = replace(
     UNCALIBRATED_CONFIG,
     calibration="block_tier",
     calibration_shrink=0.35,
     calibration_floor=1.06,
 )
+DEFAULT_CONFIG = UNCALIBRATED_CONFIG
 
 
 def _variants() -> Dict[str, LGBMConfig]:
@@ -803,6 +872,11 @@ def _variants() -> Dict[str, LGBMConfig]:
             UNCALIBRATED_CONFIG, target_scale=window
         )
     variants["lgbm_direct_uncalibrated"] = UNCALIBRATED_CONFIG
+    variants["lgbm_direct_cal_shrunk"] = SHRUNK_CONFIG
+    variants["lgbm_direct_constant_1p10"] = replace(
+        UNCALIBRATED_CONFIG, calibration="constant", constant_factor=1.10
+    )
+    variants["lgbm_blend_50_50"] = replace(UNCALIBRATED_CONFIG, strategy="blend")
     variants["lgbm_direct"] = DEFAULT_CONFIG
     return variants
 

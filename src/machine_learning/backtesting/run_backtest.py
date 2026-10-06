@@ -21,8 +21,8 @@ Usage (from src/machine_learning):
     python backtesting/run_backtest.py --source synthetic --max-series 30 --folds 3
     python backtesting/run_backtest.py --models "baselines,lgbm_direct_p*" --true-demand
 
-Outputs go to bld/backtest/<source>_<timestamp>/: forecasts.parquet, scores.csv, and
-summary.md.
+Outputs go to bld/backtest/<source>_<timestamp>/: forecasts.parquet, scores.csv,
+summary.md, and calibration_factors.csv when relevant.
 """
 
 import argparse
@@ -44,6 +44,7 @@ from backtesting.current_model import forecast_current_model  # noqa: E402
 from backtesting.data_prep import (  # noqa: E402
     build_actuals_grid,
     build_training_features,
+    eligible_series,
     load_orders,
 )
 from backtesting.folds import horizon_dates, make_cutoffs  # noqa: E402
@@ -62,19 +63,6 @@ DEFAULT_MODELS = "baselines,current_xgboost,lgbm_direct,lgbm_recursive"
 ALL_MODELS = [*BASELINES, CURRENT_MODEL_NAME, *LGBM_VARIANTS]
 
 logger = logging.getLogger(__name__)
-
-
-def eligible_series(
-    features: pd.DataFrame, cutoff: pd.Timestamp, horizon: int
-) -> List[str]:
-    """Series the production pipeline would forecast at this cutoff."""
-    activity_cutoff = cutoff - pd.Timedelta(days=AppConfig.ACTIVE_MLB_DAYS_THRESHOLD)
-    stats = features.groupby("mlb").apply(
-        lambda frame: pd.Series({"last": frame.index.max(), "rows": len(frame)}),
-        include_groups=False,
-    )
-    keep = (stats["last"] >= activity_cutoff) & (stats["rows"] >= horizon + 15)
-    return stats.index[keep].tolist()
 
 
 def resolve_models(spec: str) -> List[str]:
@@ -106,6 +94,7 @@ def run_fold(
     max_series: int,
     models: List[str],
     truth_by_mlb: Optional[Dict[str, pd.Series]] = None,
+    calibration_log: Optional[List[dict]] = None,
 ) -> pd.DataFrame:
     """Forecast and collect actuals for one cutoff; returns long-format rows."""
     features = build_training_features(orders, cutoff)
@@ -132,6 +121,16 @@ def run_fold(
             start = time.time()
             forecasts[name] = fold.forecast(LGBM_VARIANTS[name], eligible)
             logger.info(f"{name}: {len(eligible)} series in {time.time() - start:.0f}s")
+            for item in fold.calibration_diagnostics:
+                record = {
+                    "cutoff": cutoff,
+                    "inner_cutoff": cutoff - pd.Timedelta(days=horizon),
+                    "model": name,
+                    **item,
+                }
+                if calibration_log is not None:
+                    calibration_log.append(record)
+                logger.info("Calibration: %s", record)
     if CURRENT_MODEL_NAME in models:
         start = time.time()
         forecasts[CURRENT_MODEL_NAME] = forecast_current_model(
@@ -208,6 +207,7 @@ def run_source(
     )
     logger.info(f"[{name}] cutoffs: {[c.date().isoformat() for c in cutoffs]}")
 
+    calibration_log: List[dict] = []
     results = pd.concat(
         [
             run_fold(
@@ -218,6 +218,7 @@ def run_source(
                 args.max_series,
                 models,
                 truth_by_mlb,
+                calibration_log,
             )
             for c in cutoffs
         ],
@@ -244,6 +245,10 @@ def run_source(
     out_dir.mkdir(parents=True, exist_ok=True)
     results.to_parquet(out_dir / "forecasts.parquet", index=False)
     scores.to_csv(out_dir / "scores.csv", index=False)
+    if calibration_log:
+        pd.DataFrame(calibration_log).to_csv(
+            out_dir / "calibration_factors.csv", index=False
+        )
     summary = render_summary(name, cutoffs, scores, args)
     (out_dir / "summary.md").write_text(summary)
     print(summary)
