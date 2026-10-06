@@ -64,10 +64,13 @@ def test_panel_stops_at_cutoff_and_derives_unit_price(orders):
     assert panel.price[0, panel.first[0]] == pytest.approx(expected)
 
 
-@pytest.mark.parametrize("strategy", ["direct", "recursive"])
-def test_forecasts_ignore_data_after_cutoff(orders, strategy):
+@pytest.mark.parametrize(
+    "calibration,strategy",
+    [("none", "direct"), ("none", "recursive"), ("block_tier", "direct")],
+)
+def test_forecasts_ignore_data_after_cutoff(orders, calibration, strategy):
     """Changing every order after the cutoff must not change any forecast."""
-    config = replace(LGBMConfig(strategy=strategy), **FAST)
+    config = replace(LGBMConfig(strategy=strategy, calibration=calibration), **FAST)
     mlbs = list(_busiest(orders))
     baseline = LightGBMFold(orders, CUTOFF, HORIZON).forecast(config, mlbs)
 
@@ -81,9 +84,39 @@ def test_forecasts_ignore_data_after_cutoff(orders, strategy):
         pd.testing.assert_series_equal(baseline[mlb], changed[mlb])
 
 
-@pytest.mark.parametrize("strategy", ["direct", "recursive"])
-def test_forecast_shape_dates_and_non_negative(orders, fold, strategy):
-    config = replace(LGBMConfig(strategy=strategy), **FAST)
+def test_inner_window_and_calibration_bounds(orders, monkeypatch):
+    config = replace(LGBMConfig(calibration="block_tier"), **FAST)
+    mlbs = list(_busiest(orders, 8))
+    fold = LightGBMFold(orders, CUTOFF, HORIZON)
+    inner_cutoff = CUTOFF - pd.Timedelta(days=HORIZON)
+    fitted_cutoffs = []
+    original = LightGBMFold._forecast_direct
+
+    def record_inner(self, inner_config, rows):
+        fitted_cutoffs.append(self.cutoff)
+        return original(self, inner_config, rows)
+
+    monkeypatch.setattr(LightGBMFold, "_forecast_direct", record_inner)
+    forecasts = fold.forecast(config, mlbs)
+    assert fitted_cutoffs == [inner_cutoff, CUTOFF]
+    assert (
+        pd.date_range(inner_cutoff + pd.Timedelta(days=1), periods=HORIZON)[-1]
+        == CUTOFF
+    )
+    assert fold.calibration_factors
+    assert all(
+        np.isfinite(f) and 0.8 <= f <= 1.5 for f in fold.calibration_factors.values()
+    )
+    expected = pd.date_range(CUTOFF + pd.Timedelta(days=1), periods=HORIZON)
+    assert all(s.index.equals(expected) and (s >= 0).all() for s in forecasts.values())
+
+
+@pytest.mark.parametrize(
+    "strategy,target_scale",
+    [("direct", 0), ("recursive", 0), ("direct", 28), ("direct", 91)],
+)
+def test_forecast_shape_dates_and_non_negative(orders, fold, strategy, target_scale):
+    config = replace(LGBMConfig(strategy=strategy, target_scale=target_scale), **FAST)
     mlbs = list(_busiest(orders, 8))
     forecasts = fold.forecast(config, mlbs + ["NOT_A_SERIES"])
 
@@ -159,6 +192,8 @@ def test_calendar_marks_black_friday_and_brazilian_holidays():
 
 
 def test_resolve_models_expands_groups_and_patterns():
+    assert LGBM_VARIANTS["lgbm_direct"].calibration == "block_tier"
+    assert LGBM_VARIANTS["lgbm_direct_uncalibrated"].calibration == "none"
     assert resolve_models("baselines")[:3] == [
         "seasonal_naive_7",
         "weekday_mean_4w",
