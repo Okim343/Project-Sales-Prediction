@@ -201,14 +201,14 @@ should beat all three before it replaces the production one.
 
 ### LightGBM challenger
 
-`backtesting/lightgbm_model.py` trains **one global LightGBM** (Tweedie objective) on
-every series up to the cutoff, instead of one XGBoost per listing. Features describe the
-target date (weekday, day of month, Black Friday, Christmas, Brazilian holidays) and
-each series' recent sales (lags, rolling means, same-weekday mean), last known unit
-price, volume level and identity. Two strategies are available: `direct` (one model per
-horizon block, days 1–7 / 8–30 / 31–90, using only values known at the origin) and
-`recursive` (one-step model fed its own predictions). A stockout proxy drops implausible
-zero-sales runs from the training targets.
+`backtesting/lightgbm_model.py` trains **global LightGBM regressors** (Tweedie
+objective) across series up to the cutoff, instead of one XGBoost per listing. Features
+describe the target date (weekday, day of month, Black Friday, Christmas, Brazilian
+holidays) and each series' recent sales (lags, rolling means, same-weekday mean), last
+known unit price, volume level and identity. Two strategies are available: `direct` (one
+model per horizon block, days 1–7 / 8–30 / 31–90, using only values known at the origin)
+and `recursive` (one-step model fed its own predictions). A stockout proxy drops
+implausible zero-sales runs from the training targets.
 
 ```bash
 python backtesting/run_backtest.py --models "baselines,lgbm_direct"               # challenger only
@@ -216,19 +216,30 @@ python backtesting/run_backtest.py --models "baselines,lgbm_direct*" --skip-curr
 python backtesting/run_backtest.py --source synthetic --true-demand                # also score vs true demand
 ```
 
-`--models` takes names or glob patterns; the variants are listed in `LGBM_VARIANTS`.
-Common-set WAPE (bias), 4 cutoffs:
+`--models` takes names or glob patterns; the variants are listed in `LGBM_VARIANTS`. The
+default `lgbm_direct` now calibrates on an inner 90-day window ending at each cutoff. It
+estimates an observed-sales ratio for each horizon block and origin-level volume tier,
+clips ratios to \[0.8, 1.5\], then applies 35% of the adjustment with a 1.06 minimum
+factor. The previous model remains available as `lgbm_direct_uncalibrated`. All
+validation, factors and features use data available by the cutoff. The shrinkage and
+floor were selected on these same backtest folds, so an independent shadow run is needed
+before production use.
 
-| model             | real              | synthetic         |
-| ----------------- | ----------------- | ----------------- |
-| `lgbm_direct`     | **0.748** (−0.11) | **0.773** (−0.10) |
-| `lgbm_recursive`  | 0.789 (−0.01)     | 0.787 (−0.06)     |
-| `weekday_mean_4w` | 0.851 (+0.12)     | 0.838 (−0.09)     |
-| `current_xgboost` | 0.908 (+0.08)     | 0.814 (−0.15)     |
+Common-set WAPE (bias), 4 cutoffs, observed sales:
 
-`lgbm_direct` beats every baseline at every cutoff, horizon bucket and volume tier on
-both sources, but it under-forecasts by about 10%, and by about 20% on lower-volume
-series.
+| model                      | real              | synthetic         |
+| -------------------------- | ----------------- | ----------------- |
+| `lgbm_direct`              | **0.769** (+0.01) | **0.787** (−0.05) |
+| `lgbm_direct_uncalibrated` | 0.748 (−0.11)     | 0.773 (−0.10)     |
+| `lgbm_recursive`           | 0.789 (−0.01)     | 0.787 (−0.06)     |
+| `weekday_mean_4w`          | 0.851 (+0.12)     | 0.838 (−0.09)     |
+| `current_xgboost`          | 0.908 (+0.08)     | 0.814 (−0.15)     |
+
+The calibrated model keeps the lead over `weekday_mean_4w` on both sources, with overall
+bias inside ±5%. Lower-volume series remain under-forecast (−8% real, −11% synthetic),
+and the synthetic Black Friday–Christmas window remains difficult. See
+[`BIAS_CORRECTION_RESULTS.md`](src/machine_learning/backtesting/BIAS_CORRECTION_RESULTS.md)
+for all variant, horizon, volume-tier and true-demand scores.
 
 ## ⚙️ Configuration
 
