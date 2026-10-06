@@ -181,7 +181,7 @@ It runs on two sources:
 ```bash
 cd src/machine_learning
 python backtesting/synthetic_data.py                        # (re)generate data/synthetic_orders.csv
-python backtesting/run_backtest.py --source both            # full run, about 6 minutes
+python backtesting/run_backtest.py --source both            # full run incl. LightGBM, about 10 minutes
 python backtesting/run_backtest.py --source real --skip-current   # baselines only, seconds
 python -m pytest backtesting -q
 ```
@@ -198,6 +198,37 @@ Results land in `bld/backtest/<source>_<timestamp>/` (`summary.md`, `scores.csv`
 Baselines: `seasonal_naive_7` (repeat last week), `weekday_mean_4w` (mean of the same
 weekday over the last 4 weeks), `moving_average_28` (flat 28-day mean). A new model
 should beat all three before it replaces the production one.
+
+### LightGBM challenger
+
+`backtesting/lightgbm_model.py` trains **one global LightGBM** (Tweedie objective) on
+every series up to the cutoff, instead of one XGBoost per listing. Features describe the
+target date (weekday, day of month, Black Friday, Christmas, Brazilian holidays) and
+each series' recent sales (lags, rolling means, same-weekday mean), last known unit
+price, volume level and identity. Two strategies are available: `direct` (one model per
+horizon block, days 1–7 / 8–30 / 31–90, using only values known at the origin) and
+`recursive` (one-step model fed its own predictions). A stockout proxy drops implausible
+zero-sales runs from the training targets.
+
+```bash
+python backtesting/run_backtest.py --models "baselines,lgbm_direct"               # challenger only
+python backtesting/run_backtest.py --models "baselines,lgbm_direct*" --skip-current  # ablations
+python backtesting/run_backtest.py --source synthetic --true-demand                # also score vs true demand
+```
+
+`--models` takes names or glob patterns; the variants are listed in `LGBM_VARIANTS`.
+Common-set WAPE (bias), 4 cutoffs:
+
+| model             | real              | synthetic         |
+| ----------------- | ----------------- | ----------------- |
+| `lgbm_direct`     | **0.748** (−0.11) | **0.773** (−0.10) |
+| `lgbm_recursive`  | 0.789 (−0.01)     | 0.787 (−0.06)     |
+| `weekday_mean_4w` | 0.851 (+0.12)     | 0.838 (−0.09)     |
+| `current_xgboost` | 0.908 (+0.08)     | 0.814 (−0.15)     |
+
+`lgbm_direct` beats every baseline at every cutoff, horizon bucket and volume tier on
+both sources, but it under-forecasts by about 10%, and by about 20% on lower-volume
+series.
 
 ## ⚙️ Configuration
 
