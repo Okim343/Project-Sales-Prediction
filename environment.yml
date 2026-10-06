@@ -35,6 +35,8 @@ dependencies:
   - pygraphviz
   - sqlalchemy
   - psycopg2-binary
+  - lightgbm >=4.0
+  - holidays
 
   # Install project
   - pip: [pdbp, kaleido, xgboost]
