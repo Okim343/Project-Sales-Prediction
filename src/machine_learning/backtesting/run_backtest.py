@@ -124,7 +124,11 @@ def run_fold(
             for item in fold.calibration_diagnostics:
                 record = {
                     "cutoff": cutoff,
-                    "inner_cutoff": cutoff - pd.Timedelta(days=horizon),
+                    "inner_cutoff": (
+                        cutoff - pd.Timedelta(days=horizon)
+                        if LGBM_VARIANTS[name].calibration != "constant"
+                        else pd.NaT
+                    ),
                     "model": name,
                     **item,
                 }

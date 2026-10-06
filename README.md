@@ -216,30 +216,35 @@ python backtesting/run_backtest.py --models "baselines,lgbm_direct*" --skip-curr
 python backtesting/run_backtest.py --source synthetic --true-demand                # also score vs true demand
 ```
 
-`--models` takes names or glob patterns; the variants are listed in `LGBM_VARIANTS`. The
-default `lgbm_direct` now calibrates on an inner 90-day window ending at each cutoff. It
-estimates an observed-sales ratio for each horizon block and origin-level volume tier,
-clips ratios to \[0.8, 1.5\], then applies 35% of the adjustment with a 1.06 minimum
-factor. The previous model remains available as `lgbm_direct_uncalibrated`. All
-validation, factors and features use data available by the cutoff. The shrinkage and
-floor were selected on these same backtest folds, so an independent shadow run is needed
-before production use.
+`--models` takes names or glob patterns; the variants are listed in `LGBM_VARIANTS`.
+`lgbm_direct` remains uncalibrated. The diagnostic `lgbm_direct_cal_block_tier` trains
+an inner model at cutoff −90 days and selects validation series by the production
+eligibility rule **at that inner origin**. Its raw observed-sales actual/forecast ratio
+is clipped to \[0.8, 1.5\]. The harness writes each cutoff's raw and applied factors to
+`calibration_factors.csv`. The previously promoted shrunk, floored calibration is
+retained as `lgbm_direct_cal_shrunk` for comparison.
 
-Common-set WAPE (bias), 4 cutoffs, observed sales:
+Common-set **WAPE / MASE / bias** on observed sales, 4 cutoffs:
 
-| model                      | real              | synthetic         |
-| -------------------------- | ----------------- | ----------------- |
-| `lgbm_direct`              | **0.769** (+0.01) | **0.787** (−0.05) |
-| `lgbm_direct_uncalibrated` | 0.748 (−0.11)     | 0.773 (−0.10)     |
-| `lgbm_recursive`           | 0.789 (−0.01)     | 0.787 (−0.06)     |
-| `weekday_mean_4w`          | 0.851 (+0.12)     | 0.838 (−0.09)     |
-| `current_xgboost`          | 0.908 (+0.08)     | 0.814 (−0.15)     |
+| Model                        | Real                       | Synthetic                  |
+| ---------------------------- | -------------------------- | -------------------------- |
+| `lgbm_direct`                | **0.748 / 1.090 / −0.108** | **0.773 / 1.289 / −0.101** |
+| `lgbm_direct_cal_block_tier` | 0.803 / 1.179 / +0.099     | 0.774 / 1.302 / −0.092     |
+| `lgbm_direct_cal_shrunk`     | 0.765 / 1.119 / −0.010     | 0.787 / 1.314 / −0.046     |
+| `lgbm_direct_constant_1p10`  | 0.765 / 1.117 / −0.019     | 0.797 / 1.332 / −0.011     |
+| `lgbm_blend_50_50`           | 0.759 / 1.130 / −0.059     | 0.773 / 1.289 / −0.079     |
+| `lgbm_recursive`             | 0.789 / 1.196 / −0.009     | 0.787 / 1.310 / −0.058     |
+| `weekday_mean_4w`            | 0.851 / 1.254 / +0.121     | 0.838 / 1.377 / −0.092     |
+| `current_xgboost`            | 0.908 / 1.435 / +0.081     | 0.814 / 1.353 / −0.153     |
 
-The calibrated model keeps the lead over `weekday_mean_4w` on both sources, with overall
-bias inside ±5%. Lower-volume series remain under-forecast (−8% real, −11% synthetic),
-and the synthetic Black Friday–Christmas window remains difficult. See
+Correcting validation eligibility reduced the raw calibration's real overprediction, but
+it still misses the ±5% bias target on both sources. The shrunk rule reaches that target
+in aggregate, yet its 1.06 floor binds in 22 of 24 synthetic block/tier cells; its
+settings were selected on these same backtest folds. Bias also shifts sharply between
+cutoffs, and calibration raises MASE. Keep the uncalibrated model as the backtesting
+default while evaluating predeclared challengers on new dates. See
 [`BIAS_CORRECTION_RESULTS.md`](src/machine_learning/backtesting/BIAS_CORRECTION_RESULTS.md)
-for all variant, horizon, volume-tier and true-demand scores.
+for cutoff, horizon, volume-tier, factor and true-demand results.
 
 ## ⚙️ Configuration
 
