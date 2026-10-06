@@ -265,10 +265,9 @@ def _draw_series_params(
 
 
 def _black_friday(year: int) -> pd.Timestamp:
-    """Fourth Friday of November."""
+    """The day after the fourth Thursday of November (US Thanksgiving)."""
     first = pd.Timestamp(year=year, month=11, day=1)
-    first_friday = first + pd.Timedelta(days=(4 - first.dayofweek) % 7)
-    return first_friday + pd.Timedelta(weeks=3)
+    return first + pd.Timedelta(days=(3 - first.dayofweek) % 7 + 22)
 
 
 def _calendar_multipliers(dates: pd.DatetimeIndex) -> np.ndarray:
@@ -281,7 +280,7 @@ def _calendar_multipliers(dates: pd.DatetimeIndex) -> np.ndarray:
         )
         peak = (dates >= black_friday) & (dates <= black_friday + pd.Timedelta(days=3))
         multiplier[week] *= 1.08
-        multiplier[peak] *= 1.2
+        multiplier[peak] *= 1.35
         christmas_run_up = (dates >= f"{year}-12-01") & (dates <= f"{year}-12-20")
         holidays = (dates >= f"{year}-12-24") & (dates <= f"{year}-12-26")
         multiplier[christmas_run_up] *= 1.15

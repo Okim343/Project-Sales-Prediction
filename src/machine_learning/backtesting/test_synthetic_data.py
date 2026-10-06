@@ -8,6 +8,7 @@ from backtesting.data_prep import load_orders
 from backtesting.synthetic_data import (
     DAY_OF_WEEK_PROFILE,
     VIEW_COLUMNS,
+    _black_friday,
     calibration_report,
     generate_synthetic_orders,
 )
@@ -78,3 +79,8 @@ def test_load_orders_parses_synthetic_export(synthetic):
     loaded = load_orders(orders)
     assert loaded["date"].dt.tz is None
     assert (loaded["date"] == loaded["date"].dt.normalize()).all()
+
+
+@pytest.mark.parametrize("year, expected", [(2024, "2024-11-29"), (2025, "2025-11-28")])
+def test_black_friday_follows_fourth_thursday(year, expected):
+    assert _black_friday(year) == pd.Timestamp(expected)
