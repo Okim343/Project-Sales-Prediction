@@ -50,6 +50,10 @@ from backtesting.data_prep import (  # noqa: E402
 from backtesting.folds import horizon_dates, make_cutoffs  # noqa: E402
 from backtesting.lightgbm_model import LGBM_VARIANTS, LightGBMFold  # noqa: E402
 from backtesting.metrics import seasonal_naive_scale, summarise  # noqa: E402
+from backtesting.replenishment import (  # noqa: E402
+    METHODS,
+    run_replenishment,
+)
 from backtesting.synthetic_data import (  # noqa: E402
     DATA_DIR,
     PROJECT_ROOT,
@@ -254,6 +258,31 @@ def run_source(
             out_dir / "calibration_factors.csv", index=False
         )
     summary = render_summary(name, cutoffs, scores, args)
+    if getattr(args, "replenishment", False):
+        windows = _numbers(args.windows, int)
+        alphas = _numbers(args.service_levels, float)
+        methods = [m.strip() for m in args.quantile_methods.split(",") if m.strip()]
+        if not windows or min(windows) < 1 or max(windows) > args.horizon:
+            raise ValueError("--windows must contain days between 1 and --horizon")
+        if not alphas or not all(0 < alpha < 1 for alpha in alphas):
+            raise ValueError("--service-levels must be between 0 and 1")
+        if any(method not in METHODS for method in methods):
+            raise ValueError(f"--quantile-methods must use {METHODS}")
+        replenishment = run_replenishment(
+            orders,
+            results,
+            actuals_by_mlb,
+            windows,
+            alphas,
+            methods,
+            include_current=args.replenishment_include_current,
+        )
+        replenishment.forecasts.to_parquet(
+            out_dir / "window_forecasts.parquet", index=False
+        )
+        replenishment.dispersion.to_csv(out_dir / "dispersion.csv", index=False)
+        replenishment.scores.to_csv(out_dir / "replenishment_scores.csv", index=False)
+        summary += render_replenishment(replenishment, args)
     (out_dir / "summary.md").write_text(summary)
     print(summary)
     return out_dir
@@ -299,6 +328,62 @@ def render_summary(
                 _table(pivot.reset_index(), ["model", *pivot.columns]),
                 "",
             ]
+    return "\n".join(lines)
+
+
+def _numbers(spec, kind):
+    return list(
+        dict.fromkeys(kind(token.strip()) for token in spec.split(",") if token.strip())
+    )
+
+
+def render_replenishment(result, args):
+    """Show the primary ordering trade-off without hiding the full CSV scores."""
+    scores = result.scores
+    frame = scores[
+        (scores.method == "nb_tier")
+        & (scores.target == "observed")
+        & (scores.scope == "overall")
+    ]
+    columns = [
+        "model",
+        "L",
+        "alpha",
+        "mean_wape",
+        "mean_bias",
+        "coverage",
+        "scaled_pinball",
+        "fill_rate",
+        "stockout_rate",
+        "excess_units",
+    ]
+    lines = [
+        "",
+        "## Replenishment",
+        "",
+        f"Protection windows {args.windows} days and service levels {args.service_levels} "
+        "are placeholders pending business inputs.",
+        "Window NB spread is fitted by method of moments on three weekly inner origins; "
+        "tiers with fewer than 150 pairs pool both tiers. Quantiles are integer units. "
+        "The direct LightGBM window quantiles are rounded up to integer units.",
+        "Real outcomes are observed sales and may be stockout-censored. The ordering "
+        "simulation is single-period.",
+        f"Replenishment runtime: {result.runtime_seconds / 60:.1f} minutes.",
+    ]
+    if (
+        "current_xgboost" in resolve_models(args.models)
+        and not args.replenishment_include_current
+    ):
+        lines.append(
+            "current_xgboost was excluded from replenishment inner folds for runtime."
+        )
+    lines += [
+        "",
+        "### NB ordering trade-off (observed sales)",
+        "",
+        _table(frame, columns),
+        "",
+    ]
     return "\n".join(lines)
 
 
@@ -372,6 +457,13 @@ def parse_args(argv=None) -> argparse.Namespace:
         default=DATA_DIR / "synthetic_truth.parquet",
         help="Synthetic ground truth used by --true-demand",
     )
+    parser.add_argument("--replenishment", action="store_true")
+    parser.add_argument("--windows", default="7,14,28")
+    parser.add_argument("--service-levels", default="0.5,0.8,0.9,0.95")
+    parser.add_argument(
+        "--quantile-methods", default="nb_tier,ratio_tier,lgbm_quantile"
+    )
+    parser.add_argument("--replenishment-include-current", action="store_true")
     return parser.parse_args(argv)
 
 
