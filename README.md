@@ -21,9 +21,10 @@ ______________________________________________________________________
 
 ## 🔎 Overview
 
-Project Sales Prediction trains an individual **XGBoost regressor for every active
-Mercado Livre listing (MLB)** and produces a **90-day daily sales forecast** for each
-one.
+Project Sales Prediction trains a global **LightGBM direct model** and individual
+**XGBoost regressors** for active Mercado Livre listings (MLBs), producing 90-day daily
+sales forecasts. XGBoost remains the selected model until the production gate passes and
+`PRIMARY_MODEL=lgbm` is set on the VPS.
 
 Sales history is read from PostgreSQL, cleaned, and turned into time-series features
 (calendar effects, lags, rolling means, price). Forecasts are written back to the
@@ -38,6 +39,7 @@ when quality degrades, and keeps a full audit trail of every run.
 |                              |                                                                                                                       |
 | ---------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | 🎯 **Per-listing models**    | One XGBoost model per MLB, capturing listing-specific demand patterns                                                 |
+| 🌐 **Global model**          | Frozen Tweedie LightGBM direct model, trained on the last 18 months of orders at every run                            |
 | 🔭 **90-day horizon**        | Direct multi-step forecasting; horizon configurable via environment variable                                          |
 | 🔁 **Continuous learning**   | Daily incremental updates, full retrains, date-bounded backfills, and monthly sliding-window refreshes                |
 | 🛡️ **Validation & rollback** | Integrated model and forecast checks; models are archived and restored automatically if performance drops             |
@@ -137,6 +139,66 @@ python src/machine_learning/pipeline/pipeline_runner.py --since-date=2025-01-15
 ```bash
 python src/machine_learning/deploy_pipeline.py --mode=daily
 ```
+
+**Offline CSV exercise** (no database connection)
+
+```bash
+cd src/machine_learning
+python pipeline/pipeline_runner.py --mode=full --dry-run-csv ../../data/synthetic_orders.csv
+python deploy_pipeline.py --mode=daily --dry-run-csv ../../data/synthetic_orders.csv
+```
+
+Parquet tables and JSON metadata are written under `bld/dry_run/`. The CSV exercise fits
+XGBoost on the largest series by default because fitting all per-listing models is slow;
+`--dry-run-max-legacy-series 0` uses all series. It caches the legacy result for
+repeated routing checks on the same CSV. A daily CSV run bootstraps the legacy model
+from the supplied history; production daily mode keeps its existing incremental training
+and validation.
+
+### Deployment / production model
+
+The `update` branch is the deployment branch. On the VPS, run these commands in order:
+
+```bash
+git checkout update
+git pull origin update
+mamba env update -f environment.yml
+conda activate fcast_project
+cd src/machine_learning
+python backtesting/run_backtest.py --source db --models "baselines,current_xgboost,lgbm_direct" --folds 4 --max-series 100
+python backtesting/gate.py ../../bld/backtest/db_<timestamp>
+```
+
+The last path is the `db_...` run directory printed by the backtest. If the VPS can
+export `public.view_enrico` to a fresh CSV, pass `--csv /path/to/export.csv` with
+`--source db` instead of letting the backtest read the view. This gate uses MLBs and the
+production wall-clock date convention. It passes only when LightGBM beats both XGBoost
+and the four-week weekday mean on overall WAPE, stays within 0.02 of XGBoost in every
+horizon and volume group, and has overall bias within ±0.15.
+
+Only after `gate.py` prints `PASS`, set `PRIMARY_MODEL=lgbm` in the VPS `.env`, tell the
+replenishment owner about the changed forecast scale, and run:
+
+```bash
+python deploy_pipeline.py --mode=full
+```
+
+Check row counts, dates, and prediction values in `public.mlb_forecasts_90_days`,
+`public.mlb_forecasts_90_days_lgbm`, and `public.mlb_forecasts_90_days_legacy`. Check
+the new `full_lgbm` and `full` rows in `public.pipeline_metadata`, including
+`error_message` for the model that supplied the main table and any fallback. LightGBM
+artifacts are in `bld/lgbm_direct/`.
+
+The main table retains `date, prediction, mlb, sku`. After the switch, `prediction` is
+an unrounded float. The historical comparison suggests LightGBM forecasts may be about
+15–20% lower than XGBoost forecasts; tell the replenishment owner before switching.
+During the first weeks, compare daily WAPE and bias against realised sales for the main
+and legacy tables, including each volume tier.
+
+To roll back, set `PRIMARY_MODEL=xgboost` in the VPS `.env` and run the deployment
+wrapper again. The next run writes XGBoost to the main table. The legacy table holds the
+latest XGBoost output. `RUN_LEGACY_MODEL=false` skips that path; a LightGBM failure then
+leaves the main table untouched.
 
 **Scheduling with cron**
 
@@ -280,6 +342,12 @@ and can be overridden through environment variables.
 | `FORECAST_DAYS`             | `30`                           | Short horizon used by legacy/test helpers             |
 | `ACTIVE_MLB_DAYS_THRESHOLD` | `30`                           | Days of recent activity for an MLB to count as active |
 | `TEST_MLB_COUNT`            | `5`                            | Number of MLBs used by `test_*` scripts               |
+| `PRIMARY_MODEL`             | `xgboost`                      | Main-table selector (`xgboost` or `lgbm`)             |
+| `RUN_LEGACY_MODEL`          | `true`                         | Continue the per-MLB XGBoost path                     |
+| `LGBM_HISTORY_MONTHS`       | `18`                           | LightGBM order import window                          |
+| `LGBM_MIN_COVERAGE`         | `0.95`                         | Minimum eligible MLB coverage                         |
+| `LGBM_LEVEL_MIN/MAX`        | `0.5` / `2.0`                  | Forecast-to-recent-actual 28-day ratio bounds         |
+| `LGBM_DRIFT_MIN/MAX`        | `0.6` / `1.6`                  | Overlapping 28-day prior-run ratio bounds             |
 
 XGBoost hyperparameters are defined in
 [`src/machine_learning/estimation/model.py`](src/machine_learning/estimation/model.py).
