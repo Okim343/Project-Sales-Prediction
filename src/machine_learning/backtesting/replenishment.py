@@ -138,6 +138,16 @@ def fit_dispersion(inner, cutoff, alphas=ALPHAS, minimum=MIN_TIER_PAIRS):
             own = group[group.tier == tier]
             pooled = len(own) < minimum
             fit = group if pooled else own
+            if pooled:
+                logger.info(
+                    "Pooled tiers for %s, L=%s, %s at %s: %s < %s pairs",
+                    model,
+                    window,
+                    tier,
+                    pd.Timestamp(cutoff).date(),
+                    len(own),
+                    minimum,
+                )
             mu = fit.mu_W.to_numpy(dtype=float)
             actual = fit.actual.to_numpy(dtype=float)
             denominator = np.square(mu).sum()
@@ -371,7 +381,12 @@ def score_replenishment(forecasts, alphas=ALPHAS):
                             "days_cover_held": float(np.mean(days)),
                         }
                     )
-    return pd.DataFrame(rows)
+    scores = pd.DataFrame(rows)
+    groups = ["model", "method", "L", "target", "scope", "group"]
+    scores["mean_scaled_pinball"] = scores.groupby(groups)["scaled_pinball"].transform(
+        "mean"
+    )
+    return scores
 
 
 @dataclass
@@ -429,10 +444,11 @@ def run_replenishment(
                 else next(m for m in models if m in LGBM_VARIANTS)
             )
             template = group[group.model == template_name].drop(columns=["model"])
+            merged = template.merge(quantiles, on=["mlb", "L"], validate="one_to_one")
+            if len(merged) != len(template):
+                raise ValueError("Missing direct quantile window forecast")
             challenger.append(
-                template.merge(quantiles, on=["mlb", "L"]).assign(
-                    model="lgbm_quantile", method="lgbm_quantile"
-                )
+                merged.assign(model="lgbm_quantile", method="lgbm_quantile")
             )
         forecast = pd.concat([forecast, *challenger], ignore_index=True)
     expected = outer.groupby(["cutoff", "L", "model"]).size()
