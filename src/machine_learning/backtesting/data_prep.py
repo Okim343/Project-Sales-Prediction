@@ -13,14 +13,17 @@ from typing import Union
 
 import pandas as pd
 
-from config import AppConfig
 from data_management.clean_sql_data import process_sales_data
 from data_management.feature_creation import create_time_series_features
+from estimation import eligibility as _eligibility
 
 logger = logging.getLogger(__name__)
+eligible_series = _eligibility.eligible_series
 
 
-def load_orders(source: Union[str, Path, pd.DataFrame]) -> pd.DataFrame:
+def load_orders(
+    source: Union[str, Path, pd.DataFrame], date_convention: str = "backtest"
+) -> pd.DataFrame:
     """
     Read an order export and normalise it to the production view's columns.
 
@@ -33,6 +36,14 @@ def load_orders(source: Union[str, Path, pd.DataFrame]) -> pd.DataFrame:
         if isinstance(source, pd.DataFrame)
         else pd.read_csv(source, low_memory=False)
     )
+    if date_convention == "production":
+        from estimation.lgbm_forecast import normalize_orders
+
+        if "mlb" not in orders:
+            raise ValueError("The production gate requires an MLB-level export")
+        return normalize_orders(orders)
+    if date_convention != "backtest":
+        raise ValueError("Unknown date convention")
     if "mlb" not in orders.columns:
         logger.info("No 'mlb' column found; using SKU as the series identifier")
         orders["mlb"] = orders["order_items_item_seller_sku"]
@@ -59,19 +70,6 @@ def build_training_features(orders: pd.DataFrame, cutoff: pd.Timestamp) -> pd.Da
     if features.index.max() > cutoff:
         raise ValueError("Training features contain dates after the cutoff")
     return features
-
-
-def eligible_series(
-    features: pd.DataFrame, cutoff: pd.Timestamp, horizon: int
-) -> list[str]:
-    """Series the production pipeline would forecast at this cutoff."""
-    activity_cutoff = cutoff - pd.Timedelta(days=AppConfig.ACTIVE_MLB_DAYS_THRESHOLD)
-    stats = features.groupby("mlb").apply(
-        lambda frame: pd.Series({"last": frame.index.max(), "rows": len(frame)}),
-        include_groups=False,
-    )
-    keep = (stats["last"] >= activity_cutoff) & (stats["rows"] >= horizon + 15)
-    return stats.index[keep].tolist()
 
 
 def build_actuals_grid(orders: pd.DataFrame) -> pd.DataFrame:
