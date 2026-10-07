@@ -14,6 +14,7 @@ from data_management.feature_creation import create_time_series_features
 from data_management.metadata_tracker import create_metadata_table, log_pipeline_run
 from estimation.model_forecast import forecast_future_sales_direct
 from estimation.model_storage import save_models
+from pipeline.model_routing import capture_legacy_run, run_model_routing
 
 # Configure plotting backend
 pd.options.plotting.backend = "matplotlib"
@@ -25,8 +26,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def main():
-    """Main execution function for the forecasting pipeline."""
+def _run_legacy_full():
+    """Original per-listing full refresh, captured by the shared router."""
     start_time = time.time()
     run_type = "full"
     records_processed = 0
@@ -122,6 +123,16 @@ def main():
     finally:
         # Clean up database connection
         db_manager.close_connection()
+
+
+def main():
+    """Publish both forecasts and route the selected one to consumers."""
+    result = run_model_routing(
+        "full", lambda: capture_legacy_run(_run_legacy_full, globals())
+    )
+    if result["status"] == "failed":
+        raise RuntimeError(result["message"])
+    return result
 
 
 if __name__ == "__main__":

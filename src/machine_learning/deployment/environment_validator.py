@@ -12,6 +12,7 @@ import importlib
 from typing import List, Dict, Tuple, Optional, Any
 from dataclasses import dataclass
 from sqlalchemy import text
+from config import AppConfig
 
 from .path_resolver import resolve_project_paths, validate_script_paths
 
@@ -139,6 +140,8 @@ class EnvironmentValidator:
             ("psycopg2", "2.8.0"),  # May be psycopg2-binary
             ("plotly", "5.0.0"),
             ("dash", "2.0.0"),
+            ("lightgbm", "4.0.0"),
+            ("holidays", "0"),
         ]
 
         # Special cases where PyPI name differs from import name
@@ -459,6 +462,7 @@ class EnvironmentValidator:
         # Run all validations
         self.validate_python_environment()
         self.validate_required_packages()
+        self.validate_primary_model()
         self.validate_environment_variables()
         self.validate_file_permissions()
         self.validate_database_connectivity()
@@ -489,6 +493,25 @@ class EnvironmentValidator:
 
         return True
 
+    def validate_primary_model(self) -> None:
+        """Reject a model-selection typo before any forecast table is touched."""
+        valid = AppConfig.PRIMARY_MODEL in {"xgboost", "lgbm"}
+        self._add_result(
+            ValidationResult(valid, f"PRIMARY_MODEL={AppConfig.PRIMARY_MODEL}"),
+            critical=True,
+        )
+
+    def run_offline_validations(self) -> bool:
+        """Validate a CSV dry run without database access or credentials."""
+        self.results.clear()
+        self.critical_failures.clear()
+        self.validate_python_environment()
+        self.validate_required_packages()
+        self.validate_primary_model()
+        self.validate_file_permissions()
+        self.validate_memory_resources()
+        return not self.critical_failures
+
     def get_validation_summary(self) -> Dict[str, Any]:
         """Get summary of validation results."""
         return {
@@ -513,6 +536,11 @@ def validate_production_environment() -> bool:
     """
     validator = EnvironmentValidator()
     return validator.run_all_validations()
+
+
+def validate_offline_environment() -> bool:
+    """Validate the local dry-run environment without contacting PostgreSQL."""
+    return EnvironmentValidator().run_offline_validations()
 
 
 def quick_environment_check() -> Tuple[bool, List[str]]:

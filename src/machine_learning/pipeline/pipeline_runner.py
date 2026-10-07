@@ -73,6 +73,7 @@ from pipeline.logging_utils import (
     log_database_operation,
     log_model_comparison_results,
 )
+from pipeline.model_routing import capture_legacy_run, run_model_routing
 
 # Configure plotting backend
 pd.options.plotting.backend = "matplotlib"
@@ -1263,6 +1264,17 @@ def main():
         help="Run incremental updates since specific date (YYYY-MM-DD format)",
     )
     parser.add_argument(
+        "--dry-run-csv",
+        type=Path,
+        help="Use local orders and write parquet tables and JSON metadata instead of SQL",
+    )
+    parser.add_argument(
+        "--dry-run-max-legacy-series",
+        type=int,
+        default=1,
+        help="Limit expensive legacy XGBoost fitting in a CSV dry run (0 = all)",
+    )
+    parser.add_argument(
         "since_date_positional",
         nargs="?",
         help="Alternative way to specify since-date for backward compatibility",
@@ -1273,20 +1285,43 @@ def main():
     # Handle backward compatibility for positional date argument
     since_date = args.since_date or args.since_date_positional
 
-    if since_date:
+    if args.dry_run_csv:
+        from pipeline.dry_run import run_dry_run
+
+        mode = "since_date" if since_date else args.mode
+        run_dry_run(
+            args.dry_run_csv,
+            mode=mode,
+            since_date=since_date,
+            max_legacy_series=args.dry_run_max_legacy_series,
+        )
+    elif since_date:
         logger.info(f"Running since-date mode with date: {since_date}")
-        run_since_date_mode(since_date)
+        result = run_model_routing(
+            "since_date",
+            lambda: capture_legacy_run(
+                lambda: run_since_date_mode(since_date), globals()
+            ),
+        )
     elif args.mode == "daily":
         logger.info("Running daily mode pipeline")
-        run_daily_mode()
+        result = run_model_routing(
+            "daily", lambda: capture_legacy_run(run_daily_mode, globals())
+        )
     elif args.mode == "full":
         logger.info("Running full mode pipeline")
-        run_full_mode()
+        result = run_model_routing(
+            "full", lambda: capture_legacy_run(run_full_mode, globals())
+        )
     elif args.mode == "monthly":
         logger.info("Running monthly mode pipeline")
-        run_monthly_mode()
+        result = run_model_routing(
+            "monthly", lambda: capture_legacy_run(run_monthly_mode, globals())
+        )
     else:
         logger.error(f"Unknown mode: {args.mode}")
+        sys.exit(1)
+    if not args.dry_run_csv and result["status"] == "failed":
         sys.exit(1)
 
 

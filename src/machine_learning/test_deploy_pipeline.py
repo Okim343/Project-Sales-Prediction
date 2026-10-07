@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from deployment import (
     setup_production_logging,
     validate_production_environment,
+    validate_offline_environment,
     deployment_context,
     setup_working_directory,
     resolve_project_paths,
@@ -96,7 +97,12 @@ class TestDeploymentPipelineRunner:
 
             # Validate production environment
             self.logger.info("Validating test environment...")
-            if not validate_production_environment():
+            validation = (
+                validate_offline_environment
+                if "--dry-run-csv" in self.pipeline_args
+                else validate_production_environment
+            )
+            if not validation():
                 self.logger.error("Environment validation failed - cannot proceed")
                 return False
 
@@ -278,6 +284,7 @@ def parse_arguments() -> tuple[str, List[str]]:
         type=str,
         help="Run incremental updates since specific date (YYYY-MM-DD format)",
     )
+    parser.add_argument("--dry-run-csv", type=Path)
     parser.add_argument(
         "since_date_positional",
         nargs="?",
@@ -304,6 +311,9 @@ def parse_arguments() -> tuple[str, List[str]]:
             pipeline_args.append(since_date)  # Positional argument
     else:
         pipeline_args.extend(["--mode", args.mode])
+
+    if args.dry_run_csv:
+        pipeline_args.extend(["--dry-run-csv", str(args.dry_run_csv)])
 
     # Add any unknown arguments
     pipeline_args.extend(unknown_args)

@@ -4,6 +4,7 @@ Provides connection management, data import/export, and error handling.
 """
 
 import logging
+import re
 import pandas as pd
 from typing import Optional
 from sqlalchemy import create_engine, text
@@ -149,6 +150,65 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Unexpected error during forecast save: {e}")
             raise
+
+    @staticmethod
+    def forecasts_frame(forecasts: dict) -> pd.DataFrame:
+        """Convert the legacy forecast mapping to the consumer table schema."""
+        frames = []
+        for mlb, (forecast, sku) in forecasts.items():
+            if forecast is None or forecast.empty:
+                continue
+            frame = forecast[["prediction"]].copy()
+            frame["mlb"] = mlb
+            frame["sku"] = sku
+            frames.append(frame.reset_index().rename(columns={"index": "date"}))
+        if not frames:
+            raise ValueError("Refusing to replace a forecast table with no rows")
+        return pd.concat(frames, ignore_index=True)[
+            ["date", "prediction", "mlb", "sku"]
+        ]
+
+    def save_forecasts_atomic(self, forecasts: dict, table: str) -> None:
+        """Stage and swap a complete table in one PostgreSQL transaction."""
+        parts = table.split(".")
+        if len(parts) == 1:
+            schema, name = None, parts[0]
+        elif len(parts) == 2:
+            schema, name = parts
+        else:
+            raise ValueError("Invalid forecast table name")
+        if not all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", part) for part in parts):
+            raise ValueError("Invalid forecast table name")
+        frame = self.forecasts_frame(forecasts)
+        staging = f"{name}_staging"
+        qualified = f'"{schema}"."{name}"' if schema else f'"{name}"'
+        staged = f'"{schema}"."{staging}"' if schema else f'"{staging}"'
+        with self.engine.begin() as conn:
+            if conn.dialect.name == "postgresql":
+                conn.execute(
+                    text("SELECT pg_advisory_xact_lock(hashtext(:table_name))"),
+                    {"table_name": table},
+                )
+            conn.execute(text(f"DROP TABLE IF EXISTS {staged}"))
+            frame.to_sql(staging, conn, schema=schema, if_exists="fail", index=False)
+            conn.execute(text(f"DROP TABLE IF EXISTS {qualified}"))
+            conn.execute(text(f'ALTER TABLE {staged} RENAME TO "{name}"'))
+        logger.info("Atomically saved %s forecasts to %s", len(frame), table)
+
+    def read_forecasts(self, table: str) -> pd.DataFrame | None:
+        """Read an existing forecast table for overlap drift checks."""
+        parts = table.split(".")
+        if not 1 <= len(parts) <= 2 or not all(
+            re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", part) for part in parts
+        ):
+            raise ValueError("Invalid forecast table name")
+        qualified = ".".join(f'"{part}"' for part in parts)
+        try:
+            return pd.read_sql_query(
+                text(f"SELECT date, prediction, mlb FROM {qualified}"), self.engine
+            )
+        except SQLAlchemyError:
+            return None
 
     def test_connection(self) -> bool:
         """

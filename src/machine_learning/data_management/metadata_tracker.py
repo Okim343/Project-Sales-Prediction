@@ -150,7 +150,8 @@ def get_last_successful_run(run_type: Optional[str] = None) -> Optional[Dict[str
         query = base_query + " AND run_type = :run_type"
         params = {"run_type": run_type}
     else:
-        query = base_query
+        # The daily first-run fallback must consider legacy model runs only.
+        query = base_query + " AND RIGHT(run_type, 5) <> '_lgbm'"
         params = {}
 
     query += " ORDER BY run_timestamp DESC LIMIT 1"

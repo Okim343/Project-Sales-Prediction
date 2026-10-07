@@ -6,7 +6,10 @@ the core ML pipeline logic clean and focused.
 """
 
 from .logging_config import setup_production_logging, log_deployment_info
-from .environment_validator import validate_production_environment
+from .environment_validator import (
+    validate_offline_environment,
+    validate_production_environment,
+)
 from .cleanup_handler import (
     register_cleanup_handlers,
     cleanup_resources,
@@ -19,6 +22,7 @@ __all__ = [
     "setup_production_logging",
     "log_deployment_info",
     "validate_production_environment",
+    "validate_offline_environment",
     "register_cleanup_handlers",
     "cleanup_resources",
     "deployment_context",

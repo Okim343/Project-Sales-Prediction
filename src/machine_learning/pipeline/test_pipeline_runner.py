@@ -69,6 +69,7 @@ from pipeline.logging_utils import (
     log_batch_progress,
     log_database_operation,
 )
+from pipeline.model_routing import capture_legacy_run, run_model_routing
 
 # Configure plotting backend
 pd.options.plotting.backend = "matplotlib"
@@ -1405,6 +1406,25 @@ def run_monthly_mode():
         db_manager.close_connection()
 
 
+def _test_table(table: str) -> str:
+    """Keep limited-script output separate from the production tables."""
+    if table == DatabaseConfig.FORECAST_TABLE:
+        return DatabaseConfig.TEST_FORECAST_TABLE
+    suffix = "_lgbm" if table == DatabaseConfig.LGBM_FORECAST_TABLE else "_legacy"
+    return DatabaseConfig.TEST_FORECAST_TABLE + suffix
+
+
+def _run_test_routing(mode: str, legacy_callable):
+    return run_model_routing(
+        mode,
+        lambda: capture_legacy_run(legacy_callable, globals()),
+        save_table=lambda forecasts, table: db_manager.save_forecasts_atomic(
+            forecasts, _test_table(table)
+        ),
+        read_previous=lambda table: db_manager.read_forecasts(_test_table(table)),
+    )
+
+
 def main():
     """Main function with unified CLI interface for all pipeline test modes."""
     import argparse
@@ -1423,6 +1443,8 @@ def main():
         type=str,
         help="Run incremental updates since specific date (YYYY-MM-DD format)",
     )
+    parser.add_argument("--dry-run-csv", type=Path)
+    parser.add_argument("--dry-run-max-legacy-series", type=int, default=1)
     parser.add_argument(
         "since_date_positional",
         nargs="?",
@@ -1434,20 +1456,34 @@ def main():
     # Handle backward compatibility for positional date argument
     since_date = args.since_date or args.since_date_positional
 
-    if since_date:
+    if args.dry_run_csv:
+        from pipeline.dry_run import run_dry_run
+
+        mode = "since_date" if since_date else args.mode
+        run_dry_run(
+            args.dry_run_csv,
+            mode,
+            since_date,
+            max_legacy_series=args.dry_run_max_legacy_series,
+        )
+    elif since_date:
         logger.info(f"Running since-date test mode with date: {since_date}")
-        run_since_date_mode(since_date)
+        result = _run_test_routing(
+            "since_date", lambda: run_since_date_mode(since_date)
+        )
     elif args.mode == "daily":
         logger.info("Running daily test mode pipeline")
-        run_daily_mode()
+        result = _run_test_routing("daily", run_daily_mode)
     elif args.mode == "full":
         logger.info("Running full test mode pipeline")
-        run_full_mode()
+        result = _run_test_routing("full", run_full_mode)
     elif args.mode == "monthly":
         logger.info("Running monthly test mode pipeline")
-        run_monthly_mode()
+        result = _run_test_routing("monthly", run_monthly_mode)
     else:
         logger.error(f"Unknown mode: {args.mode}")
+        sys.exit(1)
+    if not args.dry_run_csv and result["status"] == "failed":
         sys.exit(1)
 
 
