@@ -10,7 +10,11 @@ from config import AppConfig
 from data_management.clean_sql_data import process_sales_data
 from data_management.feature_creation import create_time_series_features
 from estimation.eligibility import eligible_series
-from estimation.lgbm_forecast import forecast_lgbm_direct, normalize_orders
+from estimation.lgbm_forecast import (
+    forecast_lgbm_direct,
+    normalize_orders,
+    save_lgbm_bundle,
+)
 from pipeline import model_routing
 
 
@@ -78,3 +82,12 @@ def test_lgbm_import_window_uses_configured_months(monkeypatch):
     monkeypatch.setattr(model_routing, "import_data_last_n_months", fake_import)
     model_routing.import_lgbm_history()
     assert seen["months"] == 21
+
+
+def test_bundle_retains_fourteen_newest_cutoffs(tmp_path):
+    for day in pd.date_range("2025-01-01", periods=16):
+        save_lgbm_bundle({"cutoff": day.date().isoformat()}, tmp_path)
+    files = sorted(path.name for path in tmp_path.glob("model_*.joblib"))
+    assert len(files) == 14
+    assert files[0] == "model_2025-01-03.joblib"
+    assert files[-1] == "model_2025-01-16.joblib"
