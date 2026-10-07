@@ -54,6 +54,12 @@ class DatabaseConfig:
     DBNAME = os.getenv("DB_NAME", "Mercado Livre")
     VIEW = os.getenv("DB_VIEW", "public.view_enrico")
     FORECAST_TABLE = os.getenv("DB_FORECAST_TABLE", "public.mlb_forecasts_90_days")
+    LGBM_FORECAST_TABLE = os.getenv(
+        "DB_LGBM_FORECAST_TABLE", "public.mlb_forecasts_90_days_lgbm"
+    )
+    LEGACY_FORECAST_TABLE = os.getenv(
+        "DB_LEGACY_FORECAST_TABLE", "public.mlb_forecasts_90_days_legacy"
+    )
     TEST_FORECAST_TABLE = os.getenv(
         "DB_TEST_FORECAST_TABLE", "public.test_mlb_forecasts_90_days"
     )
@@ -86,6 +92,20 @@ class AppConfig:
         "DEFAULT_MLB", "TC213"
     )  # Will update once we know MLB codes
     ACTIVE_MLB_DAYS_THRESHOLD = int(os.getenv("ACTIVE_MLB_DAYS_THRESHOLD", "30"))
+    PRIMARY_MODEL = os.getenv("PRIMARY_MODEL", "xgboost").lower()
+    RUN_LEGACY_MODEL = os.getenv("RUN_LEGACY_MODEL", "true").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    LGBM_HISTORY_MONTHS = int(os.getenv("LGBM_HISTORY_MONTHS", "18"))
+    LGBM_MIN_COVERAGE = float(os.getenv("LGBM_MIN_COVERAGE", "0.95"))
+    LGBM_LEVEL_MIN = float(os.getenv("LGBM_LEVEL_MIN", "0.5"))
+    LGBM_LEVEL_MAX = float(os.getenv("LGBM_LEVEL_MAX", "2.0"))
+    LGBM_DRIFT_MIN = float(os.getenv("LGBM_DRIFT_MIN", "0.6"))
+    LGBM_DRIFT_MAX = float(os.getenv("LGBM_DRIFT_MAX", "1.6"))
+    LGBM_MODEL_DIR = BLD / "lgbm_direct"
 
     # Testing Configuration
     TEST_MLB_COUNT = int(os.getenv("TEST_MLB_COUNT", "5"))
