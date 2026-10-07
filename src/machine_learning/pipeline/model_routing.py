@@ -171,6 +171,7 @@ def run_model_routing(
     available = {}
     errors = {}
     lgbm_rows = 0
+    lgbm_started = time.monotonic()
     try:
         orders = orders_loader()
         lgbm_rows = len(orders)
@@ -197,6 +198,8 @@ def run_model_routing(
         errors["lgbm"] = _safe_error(exc)
         logger.error("LightGBM path failed: %s", errors["lgbm"])
     finally:
+        lgbm_seconds = time.monotonic() - lgbm_started
+        logger.info("LightGBM path took %.2f seconds", lgbm_seconds)
         if "bundle" in locals():
             del bundle
         if "orders" in locals():
@@ -205,6 +208,7 @@ def run_model_routing(
 
     legacy_meta = {"run_type": mode, "records_processed": 0, "models_updated": 0}
     legacy_noop = False
+    legacy_started = time.monotonic()
     if AppConfig.RUN_LEGACY_MODEL:
         try:
             legacy_forecasts, event = legacy_run()
@@ -229,6 +233,9 @@ def run_model_routing(
         except Exception as exc:
             errors["xgboost"] = _safe_error(exc)
             logger.error("Legacy XGBoost path failed: %s", errors["xgboost"])
+    legacy_seconds = (
+        time.monotonic() - legacy_started if AppConfig.RUN_LEGACY_MODEL else 0.0
+    )
 
     primary = AppConfig.PRIMARY_MODEL
     secondary = "lgbm" if primary == "xgboost" else "xgboost"
@@ -251,7 +258,9 @@ def run_model_routing(
         "failed"
         if chosen is None
         else "partial"
-        if errors or chosen not in {primary, "unchanged"}
+        if errors
+        or chosen not in {primary, "unchanged"}
+        or legacy_meta.get("status") == "partial"
         else "success"
     )
     if chosen is None:
@@ -270,6 +279,8 @@ def run_model_routing(
             if errors
             else ""
         )
+    if legacy_meta.get("status") == "partial":
+        message += f"; legacy partial: {legacy_meta.get('error_message') or 'validation rollback'}"
     elapsed = time.monotonic() - started
     log_run(
         run_type=f"{mode}_lgbm",
@@ -292,4 +303,11 @@ def run_model_routing(
             run_duration_seconds=elapsed,
         )
     logger.info("Model routing %s: %s", status, message)
-    return {"status": status, "main": chosen, "message": message, "errors": errors}
+    return {
+        "status": status,
+        "main": chosen,
+        "message": message,
+        "errors": errors,
+        "lgbm_runtime_seconds": round(lgbm_seconds, 2),
+        "legacy_runtime_seconds": round(legacy_seconds, 2),
+    }

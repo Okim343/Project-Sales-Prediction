@@ -33,7 +33,9 @@ def sample():
     return orders, as_of, lgbm, legacy
 
 
-def setup_route(monkeypatch, sample, primary="xgboost", legacy=True):
+def setup_route(
+    monkeypatch, sample, primary="xgboost", legacy=True, legacy_status="success"
+):
     orders, as_of, lgbm, xgb = sample
     monkeypatch.setattr(AppConfig, "PRIMARY_MODEL", primary)
     monkeypatch.setattr(AppConfig, "RUN_LEGACY_MODEL", legacy)
@@ -49,7 +51,10 @@ def setup_route(monkeypatch, sample, primary="xgboost", legacy=True):
     records = []
     result = model_routing.run_model_routing(
         "daily",
-        lambda: (xgb, {"run_type": "daily", "status": "success", "models_updated": 1}),
+        lambda: (
+            xgb,
+            {"run_type": "daily", "status": legacy_status, "models_updated": 1},
+        ),
         orders_loader=lambda: orders,
         save_table=lambda forecast, table: tables.__setitem__(table, forecast),
         read_previous=lambda table: None,
@@ -182,3 +187,12 @@ def test_daily_legacy_noop_keeps_existing_main(monkeypatch, sample):
     assert result["main"] == "unchanged"
     assert set(tables) == {DatabaseConfig.LGBM_FORECAST_TABLE}
     assert records[-1]["status"] == "success"
+
+
+def test_existing_legacy_partial_status_is_preserved(monkeypatch, sample):
+    result, _, records = setup_route(
+        monkeypatch, sample, primary="xgboost", legacy_status="partial"
+    )
+    assert result["status"] == "partial"
+    assert records[-1]["status"] == "partial"
+    assert "legacy partial" in records[-1]["error_message"]
