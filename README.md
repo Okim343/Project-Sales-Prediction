@@ -246,6 +246,24 @@ default while evaluating predeclared challengers on new dates. See
 [`BIAS_CORRECTION_RESULTS.md`](src/machine_learning/backtesting/BIAS_CORRECTION_RESULTS.md)
 for cutoff, horizon, volume-tier, factor and true-demand results.
 
+### Replenishment backtest
+
+Add `--replenishment` to score total demand over configurable protection windows
+(`--windows 7,14,28`) at configurable service levels
+(`--service-levels 0.5,0.8,0.9,0.95`). It fits leakage-free inner-fold window
+distributions for every selected mean forecast, tests a direct LightGBM window quantile
+model, and writes window forecasts, dispersion estimates, and ordering trade-offs. Use
+`--true-demand` to also evaluate synthetic demand before stockout censoring. The windows
+and levels are placeholders pending business inputs.
+
+On the four-cutoff comparison, **none** of the direct, 50/50 blend, or recursive
+LightGBM means met the required 90% coverage band in both real-data volume tiers at any
+window. The closest were recursive at 7 days, blend at 14 days, and direct at 28 days.
+The direct window-quantile challenger lowered average scaled pinball but also missed
+coverage, so no LightGBM replenishment forecast is ready for deployment. See
+[`REPLENISHMENT_RESULTS.md`](src/machine_learning/backtesting/REPLENISHMENT_RESULTS.md)
+for the full observed-sales and true-demand results.
+
 ## ⚙️ Configuration
 
 All settings live in [`src/machine_learning/config.py`](src/machine_learning/config.py)

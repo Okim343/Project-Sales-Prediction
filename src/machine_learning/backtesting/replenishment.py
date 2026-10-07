@@ -412,6 +412,14 @@ def run_replenishment(
     models = list(daily.model.unique())
     inner_models = [m for m in models if include_current or m != "current_xgboost"]
     eligible_daily = daily[daily.model.isin(inner_models)]
+    for cutoff, group in eligible_daily[eligible_daily.in_common_set].groupby("cutoff"):
+        expected = set(group.mlb.unique())
+        for model in inner_models:
+            present = set(group[group.model == model].mlb.unique())
+            if present != expected:
+                raise ValueError(
+                    f"{model} at {cutoff}: {len(expected - present)} common series missing"
+                )
     outer = window_totals(eligible_daily, windows, actuals)
     if "true_demand" in daily:
         truth_totals = window_totals(eligible_daily, windows, actuals, truth=True)

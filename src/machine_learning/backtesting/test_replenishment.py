@@ -94,7 +94,12 @@ def test_spread_is_leakage_free(sample):
     after = changed.date > CUTOFF
     changed.loc[after, "order_items_quantity"] *= 100
     changed.loc[after, "order_items_unit_price"] *= 10
-    altered = _inner_window_rows(changed, actuals, CUTOFF, [7], models, 90)
+    changed_actuals = build_actuals_grid(changed)
+    changed_actuals = {
+        mlb: frame.set_index("date")["y"]
+        for mlb, frame in changed_actuals.groupby("mlb")
+    }
+    altered = _inner_window_rows(changed, changed_actuals, CUTOFF, [7], models, 90)
     pd.testing.assert_frame_equal(original, altered)
     base = fit_dispersion(original, CUTOFF, minimum=3)
     other = fit_dispersion(altered, CUTOFF, minimum=3)
