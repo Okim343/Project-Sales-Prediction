@@ -412,13 +412,13 @@ def parse_args(argv=None) -> argparse.Namespace:
     """Command-line options."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
-        "--source", choices=["real", "synthetic", "both"], default="both"
+        "--source", choices=["real", "synthetic", "both", "db"], default="both"
     )
     parser.add_argument(
         "--csv",
         type=Path,
-        default=DATA_DIR / "raw_sql.csv",
-        help="Historical order export (default: data/raw_sql.csv)",
+        default=None,
+        help="Order export; with --source db, use this instead of a live read",
     )
     parser.add_argument(
         "--synthetic-csv",
@@ -477,10 +477,20 @@ def main(argv=None) -> int:
 
     sources = {}
     if args.source in ("real", "both"):
-        if not args.csv.exists():
-            logger.error(f"Historical export not found: {args.csv}")
+        real_csv = args.csv or DATA_DIR / "raw_sql.csv"
+        if not real_csv.exists():
+            logger.error(f"Historical export not found: {real_csv}")
             return 1
-        sources["real"] = load_orders(args.csv)
+        sources["real"] = load_orders(real_csv)
+    if args.source == "db":
+        if args.csv:
+            sources["db"] = load_orders(args.csv, date_convention="production")
+        else:
+            from database_utils import db_manager
+
+            sources["db"] = load_orders(
+                db_manager.import_data_from_sql(), date_convention="production"
+            )
     if args.source in ("synthetic", "both"):
         if not args.synthetic_csv.exists():
             logger.info("Synthetic data not found; generating with the default seed")
