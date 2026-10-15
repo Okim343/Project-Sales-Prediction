@@ -7,6 +7,7 @@ validation, and a live dashboard.**
 
 ![Python](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)
 ![XGBoost](https://img.shields.io/badge/model-XGBoost-EB5E28)
+![LightGBM](https://img.shields.io/badge/model-LightGBM-2E8B57)
 ![PostgreSQL](https://img.shields.io/badge/data-PostgreSQL-4169E1?logo=postgresql&logoColor=white)
 ![Dash](https://img.shields.io/badge/dashboard-Plotly%20Dash-3F4F75?logo=plotly&logoColor=white)
 ![License](https://img.shields.io/badge/license-Proprietary-red)
@@ -56,14 +57,27 @@ flowchart LR
     B --> C[Feature<br/>engineering]
     C --> D[Per-MLB XGBoost<br/>training / update]
     D --> E{Integrated<br/>validation}
-    E -- pass --> F[90-day<br/>forecasts]
+    E -- pass --> F[XGBoost<br/>90-day forecasts]
     E -- fail --> G[Rollback to<br/>archived models]
     G --> F
-    F --> H[(Forecast table)]
-    F --> I[(Model store<br/>bld/*.pkl)]
+    A --> L[Global LightGBM<br/>last 18 months]
+    L --> M{Coverage, level<br/>& drift checks}
+    F --> R{Model router<br/>PRIMARY_MODEL}
+    M --> R
+    F --> FL[(Legacy table)]
+    L --> LL[(LightGBM table)]
+    R --> H[(Main forecast table)]
+    F --> I[(Model store<br/>bld/)]
+    L --> I
     H --> J[Dash dashboard]
-    D -. run metadata .-> K[(pipeline_metadata)]
+    R -. run metadata .-> K[(pipeline_metadata)]
 ```
+
+Every run trains both forecasters. Each writes its own side table, and the router
+publishes the model selected by `PRIMARY_MODEL` to the main table. If the selected model
+fails or fails its checks, the router falls back to the other model; if neither is
+available, the main table is left unchanged. The main table is replaced atomically, so
+consumers never see a partial forecast.
 
 ### Pipeline modes
 
@@ -80,18 +94,20 @@ flowchart LR
 Project-Sales-Prediction/
 ├── environment.yml                 # Conda environment (fcast_project)
 ├── LICENSE
+├── data/                           # Git-ignored inputs (raw_sql.csv, synthetic data)
+├── bld/                            # Generated models, forecasts, backtest results
 └── src/
     ├── machine_learning/
     │   ├── config.py               # Central configuration (env-driven)
     │   ├── script_final.py         # Full production refresh
     │   ├── deploy_pipeline.py      # Hardened deployment entry point
-    │   ├── pipeline/               # Unified runner + integrated validator
+    │   ├── pipeline/               # Unified runner, validator, model router, CSV dry run
     │   ├── data_management/        # SQL import, cleaning, features, metadata
-    │   ├── estimation/             # Training, forecasting, model storage
+    │   ├── estimation/             # XGBoost + LightGBM training, forecasting, storage
     │   ├── validation/             # Model/forecast validators, model comparison
     │   ├── deployment/             # Env checks, logging, paths, cleanup
     │   ├── cron_scripts/           # Cron launchers (prod + test)
-    │   ├── backtesting/            # Synthetic data generator + rolling-origin backtest
+    │   ├── backtesting/            # Synthetic data, rolling-origin backtest, switch gate
     │   └── notebooks/              # Exploratory analysis
     └── web_app/
         └── script_webapp.py        # Dash dashboard
@@ -157,17 +173,22 @@ and validation.
 
 ### Deployment / production model
 
-The `update` branch is the deployment branch. On the VPS, run these commands in order:
+`main` is the deployment branch. On the VPS, run these commands in order:
 
 ```bash
-git checkout update
-git pull origin update
+git checkout main
+git pull origin main
 mamba env update -f environment.yml
 conda activate fcast_project
 cd src/machine_learning
 python backtesting/run_backtest.py --source db --models "baselines,current_xgboost,lgbm_direct" --folds 4 --max-series 100
 python backtesting/gate.py ../../bld/backtest/db_<timestamp>
 ```
+
+The update adds `lightgbm` and `holidays` to the environment. The raw order export is no
+longer tracked in git: if a clone still uses
+`src/machine_learning/notebooks/raw_sql.csv`, move it to the git-ignored
+`data/raw_sql.csv`.
 
 The last path is the `db_...` run directory printed by the backtest. If the VPS can
 export `public.view_enrico` to a fresh CSV, pass `--csv /path/to/export.csv` with
@@ -331,26 +352,31 @@ for the full observed-sales and true-demand results.
 All settings live in [`src/machine_learning/config.py`](src/machine_learning/config.py)
 and can be overridden through environment variables.
 
-| Variable                    | Default                        | Description                                           |
-| --------------------------- | ------------------------------ | ----------------------------------------------------- |
-| `DB_HOST` / `DB_PORT`       | — / `5432`                     | PostgreSQL host and port                              |
-| `DB_USER` / `DB_PASSWORD`   | —                              | Database credentials                                  |
-| `DB_NAME`                   | `Mercado Livre`                | Database name                                         |
-| `DB_VIEW`                   | `public.view_enrico`           | Input sales view                                      |
-| `DB_FORECAST_TABLE`         | `public.mlb_forecasts_90_days` | Forecast output table                                 |
-| `FORECAST_DAYS_LONG`        | `90`                           | Production forecast horizon (days)                    |
-| `FORECAST_DAYS`             | `30`                           | Short horizon used by legacy/test helpers             |
-| `ACTIVE_MLB_DAYS_THRESHOLD` | `30`                           | Days of recent activity for an MLB to count as active |
-| `TEST_MLB_COUNT`            | `5`                            | Number of MLBs used by `test_*` scripts               |
-| `PRIMARY_MODEL`             | `xgboost`                      | Main-table selector (`xgboost` or `lgbm`)             |
-| `RUN_LEGACY_MODEL`          | `true`                         | Continue the per-MLB XGBoost path                     |
-| `LGBM_HISTORY_MONTHS`       | `18`                           | LightGBM order import window                          |
-| `LGBM_MIN_COVERAGE`         | `0.95`                         | Minimum eligible MLB coverage                         |
-| `LGBM_LEVEL_MIN/MAX`        | `0.5` / `2.0`                  | Forecast-to-recent-actual 28-day ratio bounds         |
-| `LGBM_DRIFT_MIN/MAX`        | `0.6` / `1.6`                  | Overlapping 28-day prior-run ratio bounds             |
+| Variable                    | Default                               | Description                                           |
+| --------------------------- | ------------------------------------- | ----------------------------------------------------- |
+| `DB_HOST` / `DB_PORT`       | internal host / `5432`                | PostgreSQL host and port                              |
+| `DB_USER` / `DB_PASSWORD`   | `postgres` / —                        | Database credentials                                  |
+| `DB_NAME`                   | `Mercado Livre`                       | Database name                                         |
+| `DB_VIEW`                   | `public.view_enrico`                  | Input sales view                                      |
+| `DB_FORECAST_TABLE`         | `public.mlb_forecasts_90_days`        | Main forecast table (selected model)                  |
+| `DB_LGBM_FORECAST_TABLE`    | `public.mlb_forecasts_90_days_lgbm`   | LightGBM side table                                   |
+| `DB_LEGACY_FORECAST_TABLE`  | `public.mlb_forecasts_90_days_legacy` | XGBoost side table                                    |
+| `DB_TEST_FORECAST_TABLE`    | `public.test_mlb_forecasts_90_days`   | Output table for `test_*` scripts                     |
+| `FORECAST_DAYS_LONG`        | `90`                                  | Production forecast horizon (days)                    |
+| `FORECAST_DAYS`             | `30`                                  | Short horizon used by legacy/test helpers             |
+| `ACTIVE_MLB_DAYS_THRESHOLD` | `30`                                  | Days of recent activity for an MLB to count as active |
+| `TEST_MLB_COUNT`            | `5`                                   | Number of MLBs used by `test_*` scripts               |
+| `PRIMARY_MODEL`             | `xgboost`                             | Main-table selector (`xgboost` or `lgbm`)             |
+| `RUN_LEGACY_MODEL`          | `true`                                | Continue the per-MLB XGBoost path                     |
+| `LGBM_HISTORY_MONTHS`       | `18`                                  | LightGBM order import window                          |
+| `LGBM_MIN_COVERAGE`         | `0.95`                                | Minimum eligible MLB coverage                         |
+| `LGBM_LEVEL_MIN/MAX`        | `0.5` / `2.0`                         | Forecast-to-recent-actual 28-day ratio bounds         |
+| `LGBM_DRIFT_MIN/MAX`        | `0.6` / `1.6`                         | Overlapping 28-day prior-run ratio bounds             |
 
 XGBoost hyperparameters are defined in
-[`src/machine_learning/estimation/model.py`](src/machine_learning/estimation/model.py).
+[`src/machine_learning/estimation/model.py`](src/machine_learning/estimation/model.py);
+the production LightGBM model is in
+[`src/machine_learning/estimation/lightgbm_model.py`](src/machine_learning/estimation/lightgbm_model.py).
 
 ## 🗺 Roadmap
 
