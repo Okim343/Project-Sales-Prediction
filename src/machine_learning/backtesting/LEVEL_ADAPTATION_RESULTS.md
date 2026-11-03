@@ -91,3 +91,31 @@ The all-eligible scores are within 0.008 of the common-set scores in both regime
 - **Removing the level error barely moves unit WAPE.** In regime A the blend cut the overall bias from −17% to −13%, but unit WAPE changed by only 0.001. At the daily level most of the unit error is day-to-day variation around the level, not the level itself. Better level tracking is unlikely to improve daily unit WAPE much.
 - **The bias reduction may still matter for window totals.** Replenishment decisions sum forecasts over 7–28 day windows, where day-to-day errors partly cancel and the level error does not. Whether the blend helps there is a separate question; this experiment didn't test it. It could be checked with the existing `--replenishment` harness.
 - **Without the ribbon the picture is different.** The two regimes disagree on whether a shorter training window helps the remaining SKUs. That gives no consistent reason to change `train_days`.
+
+## Part 2: window totals for replenishment
+
+### Pre-registration (written and committed before any run)
+
+Part 1 showed that the long-horizon blend `lgbm_direct_wm4w_long` reduces the level error without improving daily unit WAPE. Replenishment uses demand summed over a protection window, where daily noise partly cancels and the level error does not. Part 2 tests whether the blend improves those window totals.
+
+**Windows.** Protection windows start the day after the cutoff. The blend changes only days 31–90, so on windows of 30 days or less it is identical to `lgbm_direct` by construction. Windows of **60 and 90 days** are the test. Windows of 7, 14 and 28 days are run as controls and must come out identical. Service levels stay at the placeholder values 0.5, 0.8, 0.9 and 0.95. The quantile method is `nb_tier` (negative binomial spread fitted on three inner origins), as in `REPLENISHMENT_RESULTS.md`.
+
+**Runs** (same data, cutoffs and common set as Part 1):
+
+```bash
+python backtesting/run_backtest.py --source vendas --end-date 2025-12-31 --tag LW_A \
+  --models "weekday_mean_4w,lgbm_direct,lgbm_direct_wm4w_long" \
+  --replenishment --windows 7,14,28,60,90 --quantile-methods nb_tier
+python backtesting/run_backtest.py --source vendas --end-date 2026-10-31 --tag LW_B \
+  --models "weekday_mean_4w,lgbm_direct,lgbm_direct_wm4w_long" \
+  --replenishment --windows 7,14,28,60,90 --quantile-methods nb_tier
+```
+
+**Decision rule.** The blend **passes** if, in regime A on the common set and on observed sales, all four hold at **both** L = 60 and L = 90, compared with `lgbm_direct`:
+
+1. Window-total WAPE is lower.
+2. The absolute window-total bias is smaller.
+3. Mean scaled pinball over the four service levels is lower.
+4. Window-total WAPE is also lower without AWR1-110X74 (computed from `window_forecasts.parquet`).
+
+It is **recommended** only if its regime B window-total WAPE at L = 90 is no more than 0.010 worse than `lgbm_direct`'s. Coverage at 0.9, fill rate and excess units are reported for context but do not decide. Real outcomes are observed sales and may be censored by stockouts.
