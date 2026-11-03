@@ -1,4 +1,4 @@
-"""Tests for the invoice-sales loader and value-weighted WAPE."""
+"""Tests for the invoice-sales loader, value-weighted WAPE and the --end-date option."""
 
 import io
 
@@ -8,6 +8,7 @@ import pytest
 
 from backtesting.data_prep import last_unit_price
 from backtesting.metrics import summarise, wape, wape_value
+from backtesting.run_backtest import parse_args, truncate_and_cut, unit_concentration
 from backtesting.vendas_data import (
     load_vendas_orders,
     read_vendas_daily,
@@ -150,3 +151,50 @@ def test_price_weight_uses_last_price_at_cutoff_not_later():
     assert last_unit_price(orders, pd.Timestamp("2026-01-01"))[
         "AWR1-110X74"
     ] == pytest.approx(25.0)
+
+
+def _orders_until(end):
+    dates = pd.date_range("2023-01-01", end, freq="D")
+    return pd.DataFrame({"date": dates, "mlb": "a", "order_items_quantity": 1.0})
+
+
+@pytest.mark.parametrize(
+    "end_date, expected",
+    [
+        ("2025-12-31", ["2025-07-04", "2025-08-03", "2025-09-02", "2025-10-02"]),
+        ("2026-10-31", ["2026-05-04", "2026-06-03", "2026-07-03", "2026-08-02"]),
+    ],
+)
+def test_end_date_truncates_before_cutoffs(end_date, expected):
+    args = parse_args(["--source", "vendas", "--end-date", end_date])
+    orders, cutoffs = truncate_and_cut(_orders_until("2026-10-31"), args)
+    assert [c.date().isoformat() for c in cutoffs] == expected
+    assert orders["date"].max() == pd.Timestamp(end_date)
+
+
+def test_end_date_sets_last_cutoff_even_without_sales_on_last_day():
+    args = parse_args(["--end-date", "2025-12-31"])
+    _, cutoffs = truncate_and_cut(_orders_until("2025-12-20"), args)
+    assert cutoffs[-1] == pd.Timestamp("2025-10-02")
+
+
+def test_without_end_date_cutoffs_follow_the_data():
+    args = parse_args([])
+    _, cutoffs = truncate_and_cut(_orders_until("2025-03-16"), args)
+    assert cutoffs[-1] == pd.Timestamp("2024-12-16")
+
+
+def test_unit_concentration_shares_use_one_model():
+    rows = pd.DataFrame(
+        {
+            "model": ["m1"] * 3 + ["m2"] * 3,
+            "mlb": ["a", "b", "c"] * 2,
+            "actual": [6.0, 3.0, 1.0] * 2,
+            "price_weight": [1.0, 2.0, 4.0] * 2,
+        }
+    )
+    shares = unit_concentration(rows, top=2)
+    assert list(shares["mlb"]) == ["a", "b"]
+    assert list(shares["unit_share"]) == pytest.approx([0.6, 0.3])
+    # value 6, 6, 4 of 16
+    assert list(shares["value_share"]) == pytest.approx([6 / 16, 6 / 16])

@@ -12,6 +12,11 @@ Two leaderboards are produced:
 - **all eligible series**: every model except the production model (which is only run
   on the common set to save time).
 
+With ``--source vendas`` the Greycom invoice sales (NF-e series 2) are loaded at SKU
+level without the World Cup items, truncated at ``--end-date`` before cutoffs are
+computed, and also scored by value-weighted WAPE (each series' last known unit price at
+the cutoff as weight) and by cutoff.
+
 With ``--true-demand`` the synthetic source is additionally scored against the planted
 true demand (before stockouts censor it) from ``data/synthetic_truth.parquet``.
 
@@ -20,8 +25,9 @@ Usage (from src/machine_learning):
     python backtesting/run_backtest.py --source real --skip-current
     python backtesting/run_backtest.py --source synthetic --max-series 30 --folds 3
     python backtesting/run_backtest.py --models "baselines,lgbm_direct_p*" --true-demand
+    python backtesting/run_backtest.py --source vendas --end-date 2025-12-31 --tag A
 
-Outputs go to bld/backtest/<source>_<timestamp>/: forecasts.parquet, scores.csv,
+Outputs go to bld/backtest/<source>[_<tag>]_<timestamp>/: forecasts.parquet, scores.csv,
 summary.md, and calibration_factors.csv when relevant.
 """
 
@@ -32,7 +38,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -45,6 +51,7 @@ from backtesting.data_prep import (  # noqa: E402
     build_actuals_grid,
     build_training_features,
     eligible_series,
+    last_unit_price,
     load_orders,
 )
 from backtesting.folds import horizon_dates, make_cutoffs  # noqa: E402
@@ -60,10 +67,16 @@ from backtesting.synthetic_data import (  # noqa: E402
     generate_synthetic_orders,
     save_synthetic,
 )
+from backtesting.vendas_data import (  # noqa: E402
+    VENDAS_CSV,
+    VENDAS_END_DATE,
+    load_vendas_orders,
+)
 
 CURRENT_MODEL_NAME = "current_xgboost"
 TOP_TIER_SHARE = 0.2
 DEFAULT_MODELS = "baselines,current_xgboost,lgbm_direct,lgbm_recursive"
+CONCENTRATION_TOP = 5
 ALL_MODELS = [*BASELINES, CURRENT_MODEL_NAME, *LGBM_VARIANTS]
 
 logger = logging.getLogger(__name__)
@@ -99,8 +112,14 @@ def run_fold(
     models: List[str],
     truth_by_mlb: Optional[Dict[str, pd.Series]] = None,
     calibration_log: Optional[List[dict]] = None,
+    price_weights: bool = False,
 ) -> pd.DataFrame:
-    """Forecast and collect actuals for one cutoff; returns long-format rows."""
+    """
+    Forecast and collect actuals for one cutoff; returns long-format rows.
+
+    With ``price_weights`` each row also carries ``price_weight``, the series' last
+    known unit price on or before the cutoff, for value-weighted scores.
+    """
     features = build_training_features(orders, cutoff)
     eligible = eligible_series(features, cutoff, horizon)
 
@@ -112,6 +131,7 @@ def run_fold(
     n_top = max(1, int(round(len(volume) * TOP_TIER_SHARE)))
     top_tier = set(volume.index[:n_top])
     dates = horizon_dates(cutoff, horizon)
+    prices = last_unit_price(orders, cutoff) if price_weights else None
 
     forecasts: Dict[str, Dict[str, pd.Series]] = {
         name: {mlb: fn(histories[mlb], cutoff, horizon) for mlb in eligible}
@@ -174,6 +194,7 @@ def run_fold(
                         "tier": "top 20%" if mlb in top_tier else "rest",
                         "in_common_set": mlb in common,
                         **({"true_demand": true_demand} if truth_by_mlb else {}),
+                        **({"price_weight": prices[mlb]} if prices is not None else {}),
                     }
                 )
             )
@@ -184,13 +205,42 @@ def run_fold(
     return pd.concat(rows, ignore_index=True)
 
 
+def truncate_and_cut(
+    orders: pd.DataFrame, args: argparse.Namespace
+) -> Tuple[pd.DataFrame, List[pd.Timestamp]]:
+    """
+    Orders up to ``args.end_date`` (when set) and the fold cutoffs computed after that.
+
+    With an end date the last cutoff is end date - horizon, even if the last day has no
+    sales; without one it is the last order date - horizon.
+    """
+    end_date = getattr(args, "end_date", None)
+    if end_date is not None:
+        end_date = pd.Timestamp(end_date).normalize()
+        orders = orders[orders["date"] <= end_date]
+    cutoffs = make_cutoffs(
+        orders["date"].min(),
+        end_date if end_date is not None else orders["date"].max(),
+        args.horizon,
+        args.folds,
+        args.step_days,
+    )
+    return orders, cutoffs
+
+
 def run_source(
     name: str,
     orders: pd.DataFrame,
     args: argparse.Namespace,
     truth: Optional[pd.DataFrame] = None,
+    value_weights: bool = False,
 ) -> Path:
-    """Backtest one data source and write its outputs."""
+    """
+    Backtest one data source and write its outputs.
+
+    ``value_weights`` adds value-weighted WAPE, per-cutoff scores and a unit
+    concentration table to the outputs.
+    """
     models = resolve_models(args.models)
     if args.skip_current and CURRENT_MODEL_NAME in models:
         models.remove(CURRENT_MODEL_NAME)
@@ -202,17 +252,11 @@ def run_source(
         if truth is not None
         else None
     )
+    orders, cutoffs = truncate_and_cut(orders, args)
     actuals = build_actuals_grid(orders)
     actuals_by_mlb = {
         mlb: frame.set_index("date")["y"] for mlb, frame in actuals.groupby("mlb")
     }
-    cutoffs = make_cutoffs(
-        orders["date"].min(),
-        orders["date"].max(),
-        args.horizon,
-        args.folds,
-        args.step_days,
-    )
     logger.info(f"[{name}] cutoffs: {[c.date().isoformat() for c in cutoffs]}")
 
     calibration_log: List[dict] = []
@@ -227,6 +271,7 @@ def run_source(
                 models,
                 truth_by_mlb,
                 calibration_log,
+                price_weights=value_weights,
             )
             for c in cutoffs
         ],
@@ -236,8 +281,12 @@ def run_source(
     common = results[results["in_common_set"]]
     every_series = results[results["model"] != CURRENT_MODEL_NAME]
     frames = [
-        summarise(common).assign(scope=f"common set (top {args.max_series})"),
-        summarise(every_series).assign(scope="all eligible series"),
+        summarise(common, by_cutoff=value_weights).assign(
+            scope=f"common set (top {args.max_series})"
+        ),
+        summarise(every_series, by_cutoff=value_weights).assign(
+            scope="all eligible series"
+        ),
     ]
     if truth_by_mlb is not None:
         frames.append(
@@ -247,8 +296,9 @@ def run_source(
         )
     scores = pd.concat(frames, ignore_index=True)
 
+    label = f"{name}_{args.tag}" if getattr(args, "tag", None) else name
     out_dir = (
-        PROJECT_ROOT / "bld" / "backtest" / f"{name}_{datetime.now():%Y%m%d_%H%M%S}"
+        PROJECT_ROOT / "bld" / "backtest" / f"{label}_{datetime.now():%Y%m%d_%H%M%S}"
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     results.to_parquet(out_dir / "forecasts.parquet", index=False)
@@ -257,7 +307,19 @@ def run_source(
         pd.DataFrame(calibration_log).to_csv(
             out_dir / "calibration_factors.csv", index=False
         )
-    summary = render_summary(name, cutoffs, scores, args)
+    summary = render_summary(label, cutoffs, scores, args)
+    if value_weights:
+        concentration = pd.concat(
+            [
+                unit_concentration(common).assign(
+                    scope=f"common set (top {args.max_series})"
+                ),
+                unit_concentration(every_series).assign(scope="all eligible series"),
+            ],
+            ignore_index=True,
+        )
+        concentration.to_csv(out_dir / "concentration.csv", index=False)
+        summary += render_concentration(results, concentration)
     if getattr(args, "replenishment", False):
         windows = _numbers(args.windows, int)
         alphas = _numbers(args.service_levels, float)
@@ -303,21 +365,35 @@ def render_summary(
         + ". WAPE and MASE: lower is better. Bias > 0 means over-forecasting.",
         "",
     ]
+    weighted = "wape_value" in scores
+    if weighted:
+        lines += [
+            "wape_value weights each series' errors by its last known unit price on or "
+            "before the cutoff (revenue-weighted WAPE).",
+            "",
+        ]
+    metrics = ["wape", "wape_value"] if weighted else ["wape"]
+    names = {"wape": "WAPE", "wape_value": "wape_value", "bias": "Bias"}
+    groups = {"horizon": "horizon", "volume": "volume tier", "cutoff": "cutoff"}
     for scope, frame in scores.groupby("scope", sort=False):
         overall = frame[frame["group_type"] == "overall"].sort_values("wape")
         lines += [
             f"## Leaderboard: {scope}",
             "",
-            _table(overall, ["model", "wape", "mase", "bias", "series_x_folds"]),
+            _table(overall, ["model", *metrics, "mase", "bias", "series_x_folds"]),
             "",
         ]
-        for group_type, title in [
-            ("horizon", "WAPE by horizon"),
-            ("volume", "WAPE by volume tier"),
-        ]:
+        tables = [
+            (group_type, metric)
+            for group_type in groups
+            if (frame["group_type"] == group_type).any()
+            for metric in metrics + (["bias"] if group_type == "cutoff" else [])
+        ]
+        for group_type, metric in tables:
+            title = f"{names[metric]} by {groups[group_type]}"
             pivot = (
                 frame[frame["group_type"] == group_type]
-                .pivot(index="model", columns="group", values="wape")
+                .pivot(index="model", columns="group", values=metric)
                 .reindex(
                     index=overall["model"], columns=_ordered_groups(frame, group_type)
                 )
@@ -328,6 +404,40 @@ def render_summary(
                 _table(pivot.reset_index(), ["model", *pivot.columns]),
                 "",
             ]
+    return "\n".join(lines)
+
+
+def unit_concentration(
+    results: pd.DataFrame, top: int = CONCENTRATION_TOP
+) -> pd.DataFrame:
+    """
+    The ``top`` series by scored actual units, with their unit and value shares.
+
+    Actuals are the same for every model, so one model's rows are used. Value uses
+    the ``price_weight`` column.
+    """
+    rows = results[results["model"] == results["model"].iloc[0]]
+    rows = rows.assign(value=rows["actual"] * rows["price_weight"])
+    totals = rows.groupby("mlb")[["actual", "value"]].sum()
+    shares = (totals / totals.sum()).sort_values("actual", ascending=False).head(top)
+    return shares.rename(
+        columns={"actual": "unit_share", "value": "value_share"}
+    ).reset_index()
+
+
+def render_concentration(results: pd.DataFrame, concentration: pd.DataFrame) -> str:
+    """Markdown table of the top series' share of scored units."""
+    lines = ["", "## Unit concentration", ""]
+    for scope, frame in concentration.groupby("scope", sort=False):
+        lines += [
+            f"### Top {len(frame)} series by scored units: {scope}",
+            "",
+            _table(frame, ["mlb", "unit_share", "value_share"]),
+            "",
+            f"Together: {frame['unit_share'].sum():.3f} of units, "
+            f"{frame['value_share'].sum():.3f} of value.",
+            "",
+        ]
     return "\n".join(lines)
 
 
@@ -412,7 +522,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     """Command-line options."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument(
-        "--source", choices=["real", "synthetic", "both", "db"], default="both"
+        "--source",
+        choices=["real", "synthetic", "both", "db", "vendas"],
+        default="both",
     )
     parser.add_argument(
         "--csv",
@@ -425,6 +537,23 @@ def parse_args(argv=None) -> argparse.Namespace:
         type=Path,
         default=DATA_DIR / "synthetic_orders.csv",
         help="Synthetic orders; generated with the default seed if missing",
+    )
+    parser.add_argument(
+        "--vendas-csv",
+        type=Path,
+        default=VENDAS_CSV,
+        help="Greycom SKU-day invoice sales used by --source vendas",
+    )
+    parser.add_argument(
+        "--end-date",
+        default=None,
+        help="Last day of data; later orders are dropped before cutoffs are computed "
+        f"(default for --source vendas: {VENDAS_END_DATE})",
+    )
+    parser.add_argument(
+        "--tag",
+        default=None,
+        help="Suffix for the output folder name, e.g. A gives vendas_A_<timestamp>",
     )
     parser.add_argument(
         "--max-series",
@@ -491,6 +620,10 @@ def main(argv=None) -> int:
             sources["db"] = load_orders(
                 db_manager.import_data_from_sql(), date_convention="production"
             )
+    if args.source == "vendas":
+        if args.end_date is None:
+            args.end_date = VENDAS_END_DATE
+        sources["vendas"] = load_vendas_orders(args.vendas_csv, end_date=args.end_date)
     if args.source in ("synthetic", "both"):
         if not args.synthetic_csv.exists():
             logger.info("Synthetic data not found; generating with the default seed")
@@ -502,7 +635,7 @@ def main(argv=None) -> int:
         truth = None
         if name == "synthetic" and args.true_demand:
             truth = pd.read_parquet(args.truth, columns=["mlb", "date", "true_demand"])
-        out_dir = run_source(name, orders, args, truth)
+        out_dir = run_source(name, orders, args, truth, value_weights=name == "vendas")
         logger.info(f"[{name}] results written to {out_dir}")
     return 0
 
