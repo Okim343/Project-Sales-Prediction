@@ -4,7 +4,8 @@ Accuracy metrics for backtest results.
 All functions take a long-format frame with one row per (model, cutoff, mlb, date) and
 columns ``forecast``, ``actual``, and ``h`` (1-based horizon step). MASE also needs a
 per-(cutoff, mlb) ``scale``: the in-sample mean absolute error of a 7-day seasonal naive
-forecast on the training history.
+forecast on the training history. When a per-(cutoff, mlb) ``price_weight`` column is
+present, ``summarise`` also reports the value-weighted WAPE.
 """
 
 import numpy as np
@@ -17,6 +18,21 @@ def wape(forecast: pd.Series, actual: pd.Series) -> float:
     """Weighted absolute percentage error: sum |forecast - actual| / sum actual."""
     total = actual.sum()
     return float(np.abs(forecast - actual).sum() / total) if total > 0 else float("nan")
+
+
+def wape_value(forecast: pd.Series, actual: pd.Series, weight: pd.Series) -> float:
+    """
+    Value-weighted WAPE: sum w * |forecast - actual| / sum w * actual.
+
+    ``weight`` is a per-row unit price, for example each series' last known price at
+    the cutoff, so errors count in currency rather than units.
+    """
+    total = (weight * actual).sum()
+    return (
+        float((weight * np.abs(forecast - actual)).sum() / total)
+        if total > 0
+        else float("nan")
+    )
 
 
 def bias(forecast: pd.Series, actual: pd.Series) -> float:
@@ -51,31 +67,37 @@ def seasonal_naive_scale(history: pd.Series, season: int = 7) -> float:
     return float(np.abs(values[season:] - values[:-season]).mean())
 
 
-def summarise(results: pd.DataFrame) -> pd.DataFrame:
+def summarise(results: pd.DataFrame, by_cutoff: bool = False) -> pd.DataFrame:
     """
     Scores per model overall, by horizon bucket, and by volume tier.
 
     ``results`` must also carry a ``tier`` column (for example "top 20%" / "rest").
+    With a ``price_weight`` column a ``wape_value`` column is added; with ``by_cutoff``
+    each cutoff is also scored as group type "cutoff".
 
     Returns:
         DataFrame with columns model, group_type, group, wape, mase, bias, series_x_folds
-        (number of scored series-cutoff pairs).
+        (number of scored series-cutoff pairs), and wape_value when weights are given.
     """
     results = results.assign(abs_error=(results["forecast"] - results["actual"]).abs())
     rows = []
+    weighted = "price_weight" in results
 
     def add(model, group_type, group, frame):
-        rows.append(
-            {
-                "model": model,
-                "group_type": group_type,
-                "group": group,
-                "wape": wape(frame["forecast"], frame["actual"]),
-                "mase": mase(frame),
-                "bias": bias(frame["forecast"], frame["actual"]),
-                "series_x_folds": frame[["cutoff", "mlb"]].drop_duplicates().shape[0],
-            }
-        )
+        row = {
+            "model": model,
+            "group_type": group_type,
+            "group": group,
+            "wape": wape(frame["forecast"], frame["actual"]),
+            "mase": mase(frame),
+            "bias": bias(frame["forecast"], frame["actual"]),
+            "series_x_folds": frame[["cutoff", "mlb"]].drop_duplicates().shape[0],
+        }
+        if weighted:
+            row["wape_value"] = wape_value(
+                frame["forecast"], frame["actual"], frame["price_weight"]
+            )
+        rows.append(row)
 
     for model, frame in results.groupby("model"):
         add(model, "overall", "all", frame)
@@ -83,5 +105,13 @@ def summarise(results: pd.DataFrame) -> pd.DataFrame:
             add(model, "horizon", label, frame[frame["h"].between(low, high)])
         for tier, tier_frame in frame.groupby("tier"):
             add(model, "volume", tier, tier_frame)
+        if by_cutoff:
+            for cutoff, cutoff_frame in frame.groupby("cutoff"):
+                add(
+                    model,
+                    "cutoff",
+                    pd.Timestamp(cutoff).date().isoformat(),
+                    cutoff_frame,
+                )
 
     return pd.DataFrame(rows)

@@ -96,3 +96,26 @@ def build_actuals_grid(orders: pd.DataFrame) -> pd.DataFrame:
             )
         )
     return pd.concat(frames, ignore_index=True)
+
+
+def last_unit_price(orders: pd.DataFrame, cutoff: pd.Timestamp) -> pd.Series:
+    """
+    Each series' unit price on its last sale day on or before the cutoff.
+
+    The price is that day's revenue divided by its units (quantity-weighted). It is a
+    metric weight for value-weighted scores only, never a model input, and never uses a
+    price from after the cutoff.
+    """
+    data = orders[(orders["date"] <= cutoff) & (orders["order_items_quantity"] > 0)]
+    daily = (
+        data.assign(
+            revenue=data["order_items_quantity"] * data["order_items_unit_price"]
+        )
+        .groupby(["mlb", "date"])[["order_items_quantity", "revenue"]]
+        .sum()
+        .reset_index()
+        .sort_values("date")
+        .drop_duplicates("mlb", keep="last")
+        .set_index("mlb")
+    )
+    return daily["revenue"] / daily["order_items_quantity"]

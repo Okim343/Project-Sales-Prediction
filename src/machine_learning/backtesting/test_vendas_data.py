@@ -1,10 +1,13 @@
-"""Tests for the invoice-sales loader."""
+"""Tests for the invoice-sales loader and value-weighted WAPE."""
 
 import io
 
+import numpy as np
 import pandas as pd
 import pytest
 
+from backtesting.data_prep import last_unit_price
+from backtesting.metrics import summarise, wape, wape_value
 from backtesting.vendas_data import (
     load_vendas_orders,
     read_vendas_daily,
@@ -93,3 +96,57 @@ def test_reference_check_counts_items_and_revenue_by_year():
     assert check.loc[2025, "itens_vendidos"] == 15
     assert check.loc[2025, "receita_liquida"] == pytest.approx(3250.0)
     assert check.loc[2026, "unidades_vendidas"] == pytest.approx(2.0)
+
+
+def test_wape_value_by_hand():
+    forecast = pd.Series([2.0, 0.0, 5.0])
+    actual = pd.Series([1.0, 2.0, 5.0])
+    weight = pd.Series([10.0, 1.0, 2.0])
+    # w|e| = 10, 2, 0 -> 12 ; w*a = 10, 2, 10 -> 22
+    assert wape_value(forecast, actual, weight) == pytest.approx(12 / 22)
+
+
+def test_wape_value_equals_wape_with_equal_prices():
+    rng = np.random.default_rng(0)
+    forecast = pd.Series(rng.poisson(3, 50).astype(float))
+    actual = pd.Series(rng.poisson(3, 50).astype(float))
+    assert wape_value(forecast, actual, pd.Series(7.5, index=actual.index)) == (
+        pytest.approx(wape(forecast, actual))
+    )
+
+
+def test_summarise_adds_wape_value_only_with_weights():
+    results = pd.DataFrame(
+        {
+            "model": "m",
+            "cutoff": pd.Timestamp("2025-01-01"),
+            "mlb": ["a"] * 10 + ["b"] * 10,
+            "h": list(range(1, 11)) * 2,
+            "forecast": [1.0] * 10 + [4.0] * 10,
+            "actual": 2.0,
+            "scale": 1.0,
+            "tier": "rest",
+        }
+    )
+    assert "wape_value" not in summarise(results)
+    weighted = summarise(
+        results.assign(price_weight=[1.0] * 10 + [3.0] * 10), by_cutoff=True
+    )
+    overall = weighted[weighted["group_type"] == "overall"].iloc[0]
+    # a: |e| 1 at price 1, b: |e| 2 at price 3 -> (10 + 60) / (20 + 60)
+    assert overall["wape_value"] == pytest.approx(70 / 80)
+    assert overall["wape"] == pytest.approx(30 / 40)
+    assert list(weighted.loc[weighted["group_type"] == "cutoff", "group"]) == [
+        "2025-01-01"
+    ]
+
+
+def test_price_weight_uses_last_price_at_cutoff_not_later():
+    orders = load_vendas_orders(_daily(), end_date="2026-01-31")
+    prices = last_unit_price(orders, pd.Timestamp("2025-12-31"))
+    # The ribbon sold at 20 on 30 Dec and at 25 on 1 Jan; the cutoff price is 20
+    assert prices["AWR1-110X74"] == pytest.approx(20.0)
+    assert prices["100X150T27,0M"] == pytest.approx(10.0)
+    assert last_unit_price(orders, pd.Timestamp("2026-01-01"))[
+        "AWR1-110X74"
+    ] == pytest.approx(25.0)
