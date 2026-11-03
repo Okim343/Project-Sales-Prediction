@@ -243,6 +243,7 @@ def _variants() -> Dict[str, LGBMConfig]:
         variants[f"lgbm_direct_scaled_{window}"] = replace(
             UNCALIBRATED_CONFIG, target_scale=window
         )
+    variants["lgbm_direct_train180"] = replace(UNCALIBRATED_CONFIG, train_days=180)
     variants["lgbm_direct_uncalibrated"] = UNCALIBRATED_CONFIG
     variants["lgbm_direct_cal_shrunk"] = SHRUNK_CONFIG
     variants["lgbm_direct_constant_1p10"] = replace(

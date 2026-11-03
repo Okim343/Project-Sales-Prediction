@@ -46,6 +46,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from config import AppConfig  # noqa: E402
 from backtesting.baselines import BASELINES  # noqa: E402
+from backtesting.combinations import COMBINATIONS, add_combinations  # noqa: E402
 from backtesting.current_model import forecast_current_model  # noqa: E402
 from backtesting.data_prep import (  # noqa: E402
     build_actuals_grid,
@@ -77,7 +78,7 @@ CURRENT_MODEL_NAME = "current_xgboost"
 TOP_TIER_SHARE = 0.2
 DEFAULT_MODELS = "baselines,current_xgboost,lgbm_direct,lgbm_recursive"
 CONCENTRATION_TOP = 5
-ALL_MODELS = [*BASELINES, CURRENT_MODEL_NAME, *LGBM_VARIANTS]
+ALL_MODELS = [*BASELINES, CURRENT_MODEL_NAME, *LGBM_VARIANTS, *COMBINATIONS]
 
 logger = logging.getLogger(__name__)
 
@@ -132,13 +133,17 @@ def run_fold(
     top_tier = set(volume.index[:n_top])
     dates = horizon_dates(cutoff, horizon)
     prices = last_unit_price(orders, cutoff) if price_weights else None
+    combined = {m: COMBINATIONS[m] for m in models if m in COMBINATIONS}
+    needed = list(
+        dict.fromkeys(models + [n for spec in combined.values() for n in spec.inputs])
+    )
 
     forecasts: Dict[str, Dict[str, pd.Series]] = {
         name: {mlb: fn(histories[mlb], cutoff, horizon) for mlb in eligible}
         for name, fn in BASELINES.items()
-        if name in models
+        if name in needed
     }
-    lgbm_names = [m for m in models if m in LGBM_VARIANTS]
+    lgbm_names = [m for m in needed if m in LGBM_VARIANTS]
     if lgbm_names:
         fold = LightGBMFold(orders, cutoff, horizon)
         for name in lgbm_names:
@@ -159,7 +164,7 @@ def run_fold(
                 if calibration_log is not None:
                     calibration_log.append(record)
                 logger.info("Calibration: %s", record)
-    if CURRENT_MODEL_NAME in models:
+    if CURRENT_MODEL_NAME in needed:
         start = time.time()
         forecasts[CURRENT_MODEL_NAME] = forecast_current_model(
             features, sorted(common), cutoff, horizon
@@ -167,6 +172,12 @@ def run_fold(
         logger.info(
             f"Production model: {len(common)} series in {time.time() - start:.0f}s"
         )
+
+    forecasts = {
+        name: by_mlb
+        for name, by_mlb in add_combinations(forecasts, combined).items()
+        if name in models
+    }
 
     rows = []
     for mlb in eligible:
@@ -288,6 +299,19 @@ def run_source(
             scope="all eligible series"
         ),
     ]
+    without = [
+        m.strip()
+        for m in (getattr(args, "score_without", None) or "").split(",")
+        if m.strip()
+    ]
+    if without:
+        frames.append(
+            summarise(
+                common[~common["mlb"].isin(without)], by_cutoff=value_weights
+            ).assign(
+                scope=f"common set (top {args.max_series}) without {', '.join(without)}"
+            )
+        )
     if truth_by_mlb is not None:
         frames.append(
             summarise(common.assign(actual=common["true_demand"])).assign(
@@ -554,6 +578,12 @@ def parse_args(argv=None) -> argparse.Namespace:
         "--tag",
         default=None,
         help="Suffix for the output folder name, e.g. A gives vendas_A_<timestamp>",
+    )
+    parser.add_argument(
+        "--score-without",
+        default=None,
+        help="Comma-separated series also left out of an extra common-set score, "
+        "e.g. a SKU that dominates unit totals",
     )
     parser.add_argument(
         "--max-series",
