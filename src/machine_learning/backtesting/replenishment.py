@@ -15,6 +15,7 @@ import pandas as pd
 from scipy.stats import nbinom, poisson
 
 from backtesting.baselines import BASELINES
+from backtesting.combinations import COMBINATIONS, add_combinations
 from backtesting.current_model import forecast_current_model
 from backtesting.data_prep import build_training_features, eligible_series
 from backtesting.lightgbm_model import (
@@ -79,6 +80,12 @@ def _inner_window_rows(
     """Fit each selected mean model once per inner origin for all window lengths."""
     rows = []
     longest = max(windows)
+    combined = {m: COMBINATIONS[m] for m in models if m in COMBINATIONS}
+    needed = list(
+        dict.fromkeys(
+            [*models, *(n for spec in combined.values() for n in spec.inputs)]
+        )
+    )
     for origin in inner_origins(cutoff, longest):
         features = build_training_features(orders, origin)
         eligible = eligible_series(features, origin, eligibility_horizon)
@@ -88,13 +95,13 @@ def _inner_window_rows(
         volume = pd.Series({mlb: series.sum() for mlb, series in histories.items()})
         top = set(volume.nlargest(max(1, round(len(volume) * TIER_SHARE))).index)
         forecasts = {}
-        for model in models:
+        for model in needed:
             if model in BASELINES:
                 forecasts[model] = {
                     mlb: BASELINES[model](histories[mlb], origin, longest)
                     for mlb in eligible
                 }
-        lgbm_models = [model for model in models if model in LGBM_VARIANTS]
+        lgbm_models = [model for model in needed if model in LGBM_VARIANTS]
         if lgbm_models:
             fold = LightGBMFold(orders, origin, longest)
             for model in lgbm_models:
@@ -103,6 +110,11 @@ def _inner_window_rows(
             forecasts["current_xgboost"] = forecast_current_model(
                 features, eligible, origin, longest
             )
+        forecasts = {
+            model: by_mlb
+            for model, by_mlb in add_combinations(forecasts, combined).items()
+            if model in models
+        }
         for model, by_mlb in forecasts.items():
             missing = set(eligible) - set(by_mlb)
             if missing:

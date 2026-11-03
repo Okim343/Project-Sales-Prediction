@@ -5,6 +5,7 @@ from argparse import Namespace
 import pandas as pd
 import pytest
 
+from backtesting.combinations import LongHorizonBlend
 from backtesting.data_prep import build_actuals_grid, load_orders
 from backtesting.replenishment import (
     _inner_window_rows,
@@ -209,3 +210,24 @@ def test_run_source_smoke_creates_window_files(sample, monkeypatch, tmp_path):
     )
     scores = pd.read_csv(folder / "replenishment_scores.csv")
     assert {"coverage", "scaled_pinball", "fill_rate", "excess_units"} <= set(scores)
+
+
+def test_inner_rows_support_combinations(sample, monkeypatch):
+    orders, actuals = sample
+    blend = LongHorizonBlend("seasonal_naive_7", "moving_average_28", start=8)
+    monkeypatch.setattr("backtesting.replenishment.COMBINATIONS", {"mix": blend})
+    models = ["mix", "seasonal_naive_7", "moving_average_28"]
+    rows = _inner_window_rows(orders, actuals, CUTOFF, [7, 14], models, 90)
+    only = _inner_window_rows(orders, actuals, CUTOFF, [7, 14], ["mix"], 90)
+    assert set(only.model) == {"mix"}
+    wide = rows.pivot_table(
+        index=["origin", "mlb", "L"], columns="model", values="mu_W"
+    ).reset_index()
+    short = wide[wide.L == 7]
+    pd.testing.assert_series_equal(
+        short["mix"], short["seasonal_naive_7"], check_names=False
+    )
+    long = wide[wide.L == 14]
+    naive_week = long["seasonal_naive_7"] / 2
+    expected = naive_week + 0.5 * naive_week + 0.5 * long["moving_average_28"] / 2
+    pd.testing.assert_series_equal(long["mix"], expected, check_names=False)
