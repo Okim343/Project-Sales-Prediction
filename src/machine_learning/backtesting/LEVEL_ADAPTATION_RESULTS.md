@@ -119,3 +119,60 @@ python backtesting/run_backtest.py --source vendas --end-date 2026-10-31 --tag L
 4. Window-total WAPE is also lower without AWR1-110X74 (computed from `window_forecasts.parquet`).
 
 It is **recommended** only if its regime B window-total WAPE at L = 90 is no more than 0.010 worse than `lgbm_direct`'s. Coverage at 0.9, fill rate and excess units are reported for context but do not decide. Real outcomes are observed sales and may be censored by stockouts.
+
+### Results
+
+Outputs: `bld/backtest/vendas_LW_A_20261103_154013/` and `bld/backtest/vendas_LW_B_20261103_154506/` (`replenishment_scores.csv`, `window_forecasts.parquet`). Wall time was 282 s for A and 328 s for B; the replenishment step took 3.4 and 4.0 minutes. Cutoffs and common set are unchanged.
+
+**Controls.** At L = 7, 14 and 28 the blend and `lgbm_direct` are identical on every score, as expected.
+
+Below, window WAPE and bias are for the window-total mean. Pinball is the mean scaled pinball over the four service levels. Coverage, fill rate and excess units are at service level 0.9, with `nb_tier` on observed sales.
+
+#### Regime A (decides), common set
+
+| L | Model | Window WAPE | Window bias | Pinball | WAPE without AWR1-110X74 | Coverage 0.9 | Fill rate 0.9 | Excess units 0.9 |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| 28 | lgbm_direct / blend (identical) | 0.262 | −6.4% | 0.086 | 0.363 | 0.823 | 0.971 | 0.411 |
+| 28 | weekday_mean_4w | 0.319 | −2.5% | 0.110 | 0.444 | 0.828 | 0.979 | 0.653 |
+| 60 | lgbm_direct | 0.3027 | −11.2% | 0.0951 | 0.4157 | 0.785 | 0.956 | 0.313 |
+| 60 | **lgbm_direct_wm4w_long** | **0.2914** | −9.3% | **0.0902** | **0.4099** | 0.803 | 0.965 | 0.358 |
+| 60 | weekday_mean_4w | 0.330 | −4.9% | 0.116 | 0.467 | 0.783 | 0.972 | 0.705 |
+| 90 | lgbm_direct | 0.3713 | −16.9% | 0.1154 | 0.4818 | 0.778 | 0.946 | 0.264 |
+| 90 | **lgbm_direct_wm4w_long** | **0.3465** | −12.8% | **0.1025** | **0.4763** | 0.798 | 0.960 | 0.366 |
+| 90 | weekday_mean_4w | 0.355 | −7.1% | 0.131 | 0.516 | 0.798 | 0.966 | 0.780 |
+
+| Rule (blend vs `lgbm_direct`) | L = 60 | L = 90 |
+|---|---|---|
+| 1. Lower window WAPE | ✓ 0.291 vs 0.303 | ✓ 0.347 vs 0.371 |
+| 2. Smaller absolute window bias | ✓ 9.3% vs 11.2% | ✓ 12.8% vs 16.9% |
+| 3. Lower mean scaled pinball | ✓ 0.090 vs 0.095 | ✓ 0.103 vs 0.115 |
+| 4. Lower window WAPE without AWR1-110X74 | ✓ 0.410 vs 0.416 | ✓ 0.476 vs 0.482 |
+
+By cutoff, at L = 90 the blend has a lower window WAPE at three of four cutoffs; it loses 2025-07-04 (0.426 vs 0.415). By tier it is better in both (rest 0.624 vs 0.636; top 20% 0.289 vs 0.316).
+
+#### Regime B (check), common set
+
+| L | Model | Window WAPE | Window bias | Pinball | WAPE without AWR1-110X74 | Coverage 0.9 | Fill rate 0.9 |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 28 | lgbm_direct / blend (identical) | 0.329 | −0.4% | 0.106 | 0.319 | 0.809 | 0.960 |
+| 28 | weekday_mean_4w | 0.326 | +3.2% | 0.118 | 0.336 | 0.801 | 0.947 |
+| 60 | lgbm_direct | **0.2812** | +5.8% | **0.1007** | 0.3244 | 0.783 | 0.964 |
+| 60 | lgbm_direct_wm4w_long | 0.2852 | +5.9% | 0.1011 | **0.3208** | 0.783 | 0.966 |
+| 60 | weekday_mean_4w | 0.326 | +7.8% | 0.126 | 0.346 | 0.783 | 0.945 |
+| 90 | lgbm_direct | **0.3277** | +9.1% | **0.1156** | 0.3611 | 0.773 | 0.959 |
+| 90 | lgbm_direct_wm4w_long | 0.3305 | +8.8% | 0.1208 | **0.3527** | 0.768 | 0.949 |
+| 90 | weekday_mean_4w | 0.373 | +9.8% | 0.144 | 0.377 | 0.768 | 0.931 |
+
+The regime B check passes: at L = 90 the blend's window WAPE is 0.003 worse than `lgbm_direct`'s, within the 0.010 allowed.
+
+### Verdict: the blend **passes** and is **recommended** under the pre-registered rule
+
+On 60- and 90-day window totals in regime A, `lgbm_direct_wm4w_long` is more accurate than `lgbm_direct`: window WAPE −0.011 at 60 days and −0.025 at 90 days. It is less biased and has lower pinball, and it still wins without the ribbon. In regime B it is a wash: slightly worse on all series and on pinball, slightly better without the ribbon. Windows of 30 days or less are unaffected.
+
+### Caveats
+
+- **This was not an independent test.** The blend was chosen after seeing regime A in Part 1, and Part 2 scored the same regime A cutoffs. Regime B is the only data the choice did not influence, and there the blend is neutral rather than better. The evidence supports "it helps in a growing market and does no harm after a break". It does not show that the blend is better in general.
+- **It matters only for windows longer than 30 days.** If the client's protection window (lead time plus review period) is 30 days or less, the blend changes nothing.
+- **Coverage is too low for every model.** At service level 0.9, actual coverage is 0.77–0.80 at 60–90 days, and only 0.70–0.74 for the top tier under `lgbm_direct` and the blend in regime A. The NB spread fitted on three inner origins underestimates window uncertainty at long windows. This is a bigger replenishment issue than the mean model and should be fixed before any service level is promised.
+- **Observed sales only.** Outcomes may be censored by stockouts, and service levels and windows are still placeholders pending business inputs.
+- **Production would need a code change.** Adopting the blend means computing `weekday_mean_4w` and blending days 31–90 in `estimation/lgbm_forecast.py`. That change has not been made.
